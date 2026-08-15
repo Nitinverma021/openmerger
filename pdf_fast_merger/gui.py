@@ -49,6 +49,7 @@ class PdfMergerApp(tk.Tk):
         self.log_messages: list[str] = []
         self.log_window: tk.Toplevel | None = None
         self.log_box: tk.Text | None = None
+        self.toolbox_window: tk.Toplevel | None = None
         app_data = Path(os.environ.get("APPDATA", Path.home() / ".openmerger")) / "OpenMerger"
         self.settings_path = app_data / "settings.json"
 
@@ -223,10 +224,18 @@ class PdfMergerApp(tk.Tk):
         self._update_mode_controls()
 
     def _open_toolbox(self) -> None:
+        if self.toolbox_window and self.toolbox_window.winfo_exists():
+            self.toolbox_window.deiconify()
+            self.toolbox_window.lift()
+            self.toolbox_window.focus_force()
+            return
         window = tk.Toplevel(self)
+        self.toolbox_window = window
         window.title("OpenMerger PDF Toolbox")
         window.geometry("760x520")
         window.minsize(650, 460)
+        window.transient(self)
+        window.protocol("WM_DELETE_WINDOW", lambda: self._close_toolbox(window))
         frame = ttk.Frame(window, padding=16, style="App.TFrame")
         frame.pack(fill=tk.BOTH, expand=True)
         ttk.Label(frame, text="PDF Toolbox", font=("Segoe UI Semibold", 18)).grid(row=0, column=0, columnspan=4, sticky=tk.W)
@@ -262,18 +271,22 @@ class PdfMergerApp(tk.Tk):
 
         def choose_source() -> None:
             if operation.get() == "Images to PDF":
-                selected = filedialog.askopenfilenames(title="Choose images", filetypes=[("Image files", "*.png *.jpg *.jpeg *.bmp *.tif *.tiff *.webp")])
+                selected = filedialog.askopenfilenames(
+                    parent=window,
+                    title="Choose images",
+                    filetypes=[("Image files", "*.png *.jpg *.jpeg *.bmp *.tif *.tiff *.webp")],
+                )
                 if selected:
                     source.set("|".join(selected))
             else:
-                selected = filedialog.askopenfilename(title="Choose PDF", filetypes=[("PDF files", "*.pdf")])
+                selected = filedialog.askopenfilename(parent=window, title="Choose PDF", filetypes=[("PDF files", "*.pdf")])
                 if selected:
                     source.set(selected)
 
         ttk.Button(frame, text="Choose input", command=choose_source, style="Quiet.TButton").grid(row=3, column=3, pady=(10, 0))
         ttk.Label(frame, text="Output").grid(row=4, column=0, sticky=tk.W, pady=(10, 0))
         ttk.Entry(frame, textvariable=output).grid(row=4, column=1, columnspan=2, sticky=tk.EW, padx=8, pady=(10, 0))
-        ttk.Button(frame, text="Save as", command=lambda: self._choose_tool_output(output), style="Quiet.TButton").grid(row=4, column=3, pady=(10, 0))
+        ttk.Button(frame, text="Save as", command=lambda: self._choose_tool_output(output, window), style="Quiet.TButton").grid(row=4, column=3, pady=(10, 0))
 
         ttk.Label(frame, text="Pages").grid(row=5, column=0, sticky=tk.W, pady=(10, 0))
         ttk.Entry(frame, textvariable=pages, width=26).grid(row=5, column=1, sticky=tk.W, padx=8, pady=(10, 0))
@@ -321,8 +334,13 @@ class PdfMergerApp(tk.Tk):
 
         ttk.Button(frame, text="Run tool", command=run_tool, style="Accent.TButton").grid(row=10, column=3, sticky=tk.E, pady=(18, 0))
 
-    def _choose_tool_output(self, variable: tk.StringVar) -> None:
-        path = filedialog.asksaveasfilename(title="Save PDF as", defaultextension=".pdf", filetypes=[("PDF files", "*.pdf")])
+    def _close_toolbox(self, window: tk.Toplevel) -> None:
+        if window.winfo_exists():
+            window.destroy()
+        self.toolbox_window = None
+
+    def _choose_tool_output(self, variable: tk.StringVar, parent: tk.Misc | None = None) -> None:
+        path = filedialog.asksaveasfilename(parent=parent, title="Save PDF as", defaultextension=".pdf", filetypes=[("PDF files", "*.pdf")])
         if path:
             variable.set(path)
 
