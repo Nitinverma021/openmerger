@@ -1,0 +1,13 @@
+.venv-windows/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.ruff_cache/
+build/
+dist/
+dist.zip
+*.spec.bak
+*.partial
+failed_pdfs.txt
+duplicate_pdfs.txt
+*.openmerger.json

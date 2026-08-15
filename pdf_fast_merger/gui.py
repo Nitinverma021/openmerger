@@ -1,0 +1,565 @@
+from __future__ import annotations
+
+import hashlib
+import json
+import os
+import queue
+import shutil
+import threading
+import tkinter as tk
+from pathlib import Path
+from tkinter import filedialog, messagebox, ttk
+
+from .core import MergeResult, PdfInfo, format_size, ghostscript_available, merge_collection, scan_folder
+
+SORT_LABELS = {
+    "Number in filename": "number",
+    "File name": "name",
+    "Created date": "created",
+    "Modified date": "modified",
+}
+
+DIRECTION_LABELS = {
+    "Ascending": "ascending",
+    "Descending": "descending",
+}
+
+COMPRESSION_LABELS = {
+    "Best quality compression": "lossless",
+    "Strong compression (may reduce quality)": "strong",
+    "No compression": "none",
+}
+
+
+class PdfMergerApp(tk.Tk):
+    def __init__(self) -> None:
+        super().__init__()
+        self.title("OpenMerger - Fast PDF Merger")
+        self.geometry("900x620")
+        self.minsize(780, 520)
+
+        self.files: list[PdfInfo] = []
+        self.visible_files: list[PdfInfo] = []
+        self.visible_indexes: list[int] = []
+        self.page_index = 0
+        self.page_size = 500
+        self.events: queue.Queue[tuple[str, object]] = queue.Queue()
+        app_data = Path(os.environ.get("APPDATA", Path.home() / ".openmerger")) / "OpenMerger"
+        self.settings_path = app_data / "settings.json"
+
+        self.folder_var = tk.StringVar()
+        self.output_var = tk.StringVar(value=str(Path.home() / "Desktop" / "merged.pdf"))
+        self.cover_var = tk.StringVar()
+        self.password_var = tk.StringVar()
+        self.sort_var = tk.StringVar(value="Number in filename")
+        self.direction_var = tk.StringVar(value="Ascending")
+        self.compression_var = tk.StringVar(value="Best quality compression")
+        self.search_var = tk.StringVar()
+        self.resume_var = tk.BooleanVar(value=True)
+        self.bookmark_var = tk.BooleanVar(value=False)
+        self.recursive_var = tk.BooleanVar(value=False)
+        self.auto_scan_var = tk.BooleanVar(value=True)
+        self.mode_var = tk.StringVar(value="chunks")
+        self.chunk_var = tk.IntVar(value=50)
+        self.batch_var = tk.IntVar(value=50)
+        self.worker_var = tk.IntVar(value=1)
+        self.status_var = tk.StringVar(value="Choose a folder to begin.")
+        self.progress_var = tk.DoubleVar(value=0)
+        self._auto_scan_after: str | None = None
+        self._refresh_after: str | None = None
+        self._scan_generation = 0
+        self._merge_thread: threading.Thread | None = None
+        self._stop_event = threading.Event()
+        self._pause_event = threading.Event()
+
+        self._build()
+        self.folder_var.trace_add("write", self._queue_auto_scan)
+        self.search_var.trace_add("write", self._queue_refresh)
+        self.after(150, self._drain_events)
+
+    def _build(self) -> None:
+        root = ttk.Frame(self, padding=14)
+        root.pack(fill=tk.BOTH, expand=True)
+
+        source = ttk.LabelFrame(root, text="Source PDFs", padding=10)
+        source.pack(fill=tk.X)
+        folder_entry = ttk.Entry(source, textvariable=self.folder_var)
+        folder_entry.pack(side=tk.LEFT, fill=tk.X, expand=True, padx=(0, 8))
+        folder_entry.bind("<Return>", lambda _event: self._scan())
+        ttk.Button(source, text="Browse Folder", command=self._browse_folder).pack(side=tk.LEFT, padx=(0, 8))
+        ttk.Button(source, text="Scan PDFs", command=self._scan).pack(side=tk.LEFT)
+
+        options = ttk.LabelFrame(root, text="Sorting and merge options", padding=10)
+        options.pack(fill=tk.X, pady=10)
+
+        ttk.Label(options, text="Sort by").grid(row=0, column=0, sticky=tk.W)
+        sort_box = ttk.Combobox(options, textvariable=self.sort_var, values=list(SORT_LABELS), state="readonly", width=22)
+        sort_box.grid(row=0, column=1, sticky=tk.W, padx=8)
+        sort_box.bind("<<ComboboxSelected>>", lambda _event: self._queue_auto_scan())
+        direction_box = ttk.Combobox(options, textvariable=self.direction_var, values=list(DIRECTION_LABELS), state="readonly", width=12)
+        direction_box.grid(row=0, column=2, sticky=tk.W, padx=8)
+        direction_box.bind("<<ComboboxSelected>>", lambda _event: self._queue_auto_scan())
+        ttk.Checkbutton(options, text="Include subfolders", variable=self.recursive_var, command=self._queue_auto_scan).grid(row=0, column=3, sticky=tk.W, padx=8)
+        ttk.Checkbutton(options, text="Auto scan folder", variable=self.auto_scan_var, command=self._queue_auto_scan).grid(row=0, column=4, sticky=tk.W, padx=8)
+
+        ttk.Radiobutton(options, text="Make one complete merged PDF", variable=self.mode_var, value="single").grid(row=1, column=0, columnspan=2, sticky=tk.W, pady=(10, 0))
+        ttk.Radiobutton(options, text="Make chunk PDFs", variable=self.mode_var, value="chunks").grid(row=1, column=2, sticky=tk.W, pady=(10, 0))
+        ttk.Label(options, text="PDFs per chunk").grid(row=1, column=3, sticky=tk.E, padx=(8, 4), pady=(10, 0))
+        ttk.Spinbox(options, from_=1, to=100000, textvariable=self.chunk_var, width=8).grid(row=1, column=4, sticky=tk.W, pady=(10, 0))
+
+        ttk.Label(options, text="Internal batch").grid(row=2, column=0, sticky=tk.W, pady=(10, 0))
+        ttk.Spinbox(options, from_=2, to=1000, textvariable=self.batch_var, width=8).grid(row=2, column=1, sticky=tk.W, padx=8, pady=(10, 0))
+        ttk.Label(options, text="Workers").grid(row=2, column=2, sticky=tk.E, padx=8, pady=(10, 0))
+        ttk.Spinbox(options, from_=1, to=4, textvariable=self.worker_var, width=8).grid(row=2, column=3, sticky=tk.W, pady=(10, 0))
+        ttk.Label(options, text="Compression").grid(row=2, column=4, sticky=tk.E, padx=8, pady=(10, 0))
+        ttk.Combobox(options, textvariable=self.compression_var, values=list(COMPRESSION_LABELS), state="readonly", width=24).grid(row=2, column=5, sticky=tk.W, pady=(10, 0))
+        ttk.Checkbutton(options, text="Resume/skip existing chunks", variable=self.resume_var).grid(row=3, column=0, columnspan=2, sticky=tk.W, pady=(10, 0))
+        ttk.Checkbutton(options, text="Add filename bookmarks", variable=self.bookmark_var).grid(row=3, column=2, sticky=tk.W, pady=(10, 0))
+        ttk.Label(options, text="PDF password").grid(row=4, column=0, sticky=tk.W, pady=(10, 0))
+        ttk.Entry(options, textvariable=self.password_var, show="•", width=18).grid(row=4, column=1, sticky=tk.W, padx=8, pady=(10, 0))
+        ttk.Label(options, text="Used only for this job; never saved.").grid(row=4, column=2, columnspan=3, sticky=tk.W, pady=(10, 0))
+        gs_label = "Ghostscript detected." if ghostscript_available() else "Ghostscript not found: strong compression unavailable."
+        ttk.Label(options, text=f"Old PC tip: workers 1, batch 50. {gs_label}").grid(row=3, column=2, columnspan=4, sticky=tk.W, pady=(10, 0))
+
+        output = ttk.LabelFrame(root, text="Output", padding=10)
+        output.pack(fill=tk.X)
+        ttk.Entry(output, textvariable=self.output_var).pack(side=tk.LEFT, fill=tk.X, expand=True, padx=(0, 8))
+        ttk.Button(output, text="Output Folder", command=self._browse_output_folder).pack(side=tk.LEFT, padx=(0, 8))
+        ttk.Button(output, text="Save As", command=self._browse_output).pack(side=tk.LEFT)
+        ttk.Button(output, text="Add Cover", command=self._browse_cover).pack(side=tk.LEFT, padx=(8, 0))
+        ttk.Button(output, text="Save Preset", command=self._save_preset).pack(side=tk.LEFT, padx=(8, 0))
+        ttk.Button(output, text="Load Preset", command=self._load_preset).pack(side=tk.LEFT, padx=(8, 0))
+
+        list_frame = ttk.LabelFrame(root, text="Scanned PDFs", padding=10)
+        list_frame.pack(fill=tk.BOTH, expand=True, pady=10)
+        toolbar = ttk.Frame(list_frame)
+        toolbar.pack(fill=tk.X, pady=(0, 8))
+        ttk.Label(toolbar, text="Search").pack(side=tk.LEFT)
+        ttk.Entry(toolbar, textvariable=self.search_var, width=28).pack(side=tk.LEFT, padx=(6, 12))
+        ttk.Button(toolbar, text="Move Up", command=lambda: self._move_selected(-1)).pack(side=tk.LEFT, padx=(0, 6))
+        ttk.Button(toolbar, text="Move Down", command=lambda: self._move_selected(1)).pack(side=tk.LEFT, padx=(0, 6))
+        ttk.Button(toolbar, text="Remove Selected", command=self._remove_selected).pack(side=tk.LEFT, padx=(0, 6))
+        ttk.Button(toolbar, text="Find Duplicates", command=self._find_duplicates).pack(side=tk.LEFT)
+        self.page_label = ttk.Label(toolbar, text="")
+        self.page_label.pack(side=tk.RIGHT)
+        ttk.Button(toolbar, text="Next", command=lambda: self._change_page(1)).pack(side=tk.RIGHT, padx=(6, 0))
+        ttk.Button(toolbar, text="Previous", command=lambda: self._change_page(-1)).pack(side=tk.RIGHT)
+        columns = ("name", "created", "size", "path")
+        self.tree = ttk.Treeview(list_frame, columns=columns, show="headings")
+        self.tree.heading("name", text="Name")
+        self.tree.heading("created", text="Created")
+        self.tree.heading("size", text="Size")
+        self.tree.heading("path", text="Path")
+        self.tree.column("name", width=220)
+        self.tree.column("created", width=150)
+        self.tree.column("size", width=80, anchor=tk.E)
+        self.tree.column("path", width=420)
+        scrollbar = ttk.Scrollbar(list_frame, orient=tk.VERTICAL, command=self.tree.yview)
+        self.tree.configure(yscrollcommand=scrollbar.set)
+        self.tree.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+        scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
+
+        log_frame = ttk.LabelFrame(root, text="Status Log", padding=8)
+        log_frame.pack(fill=tk.X, pady=(0, 10))
+        self.log_box = tk.Text(log_frame, height=4, wrap=tk.WORD)
+        self.log_box.pack(fill=tk.X)
+
+        bottom = ttk.Frame(root)
+        bottom.pack(fill=tk.X)
+        ttk.Button(bottom, text="Open Output Folder", command=self._open_output_folder).pack(side=tk.RIGHT, padx=(8, 0))
+        self.start_button = ttk.Button(bottom, text="Start Merge", command=self._merge)
+        self.start_button.pack(side=tk.RIGHT)
+        self.cancel_button = ttk.Button(bottom, text="Cancel", command=self._cancel_merge, state=tk.DISABLED)
+        self.cancel_button.pack(side=tk.RIGHT, padx=(8, 0))
+        self.pause_button = ttk.Button(bottom, text="Pause", command=self._toggle_pause, state=tk.DISABLED)
+        self.pause_button.pack(side=tk.RIGHT)
+        ttk.Progressbar(bottom, variable=self.progress_var, maximum=100).pack(side=tk.LEFT, fill=tk.X, expand=True, padx=(0, 12))
+        ttk.Label(root, textvariable=self.status_var).pack(fill=tk.X, pady=(8, 0))
+
+    def _browse_folder(self) -> None:
+        folder = filedialog.askdirectory(title="Choose folder containing PDFs")
+        if folder:
+            self.folder_var.set(folder)
+            self._queue_auto_scan(delay_ms=100)
+
+    def _browse_output(self) -> None:
+        path = filedialog.asksaveasfilename(
+            title="Save merged PDF as",
+            defaultextension=".pdf",
+            filetypes=[("PDF files", "*.pdf")],
+            initialfile="merged.pdf",
+        )
+        if path:
+            self.output_var.set(path)
+
+    def _browse_output_folder(self) -> None:
+        folder = filedialog.askdirectory(title="Choose output folder")
+        if folder:
+            self.output_var.set(str(Path(folder) / "merged.pdf"))
+
+    def _browse_cover(self) -> None:
+        path = filedialog.askopenfilename(title="Optional cover PDF", filetypes=[("PDF files", "*.pdf")])
+        if path:
+            self.cover_var.set(path)
+            self._log(f"Cover PDF selected: {Path(path).name}")
+
+    def _scan(self) -> None:
+        folder = self.folder_var.get().strip()
+        if not folder:
+            messagebox.showwarning("Folder required", "Please choose or paste a folder path.")
+            return
+        if not Path(folder).expanduser().is_dir():
+            messagebox.showwarning("Folder not found", "The folder path does not exist.")
+            return
+        self.status_var.set("Scanning PDFs...")
+        self._log("Scanning PDFs...")
+        self._scan_generation += 1
+        sort_mode = SORT_LABELS[self.sort_var.get()]
+        sort_direction = DIRECTION_LABELS[self.direction_var.get()]
+        recursive = self.recursive_var.get()
+        threading.Thread(target=self._scan_worker, args=(folder, self._scan_generation, sort_mode, sort_direction, recursive), daemon=True).start()
+
+    def _queue_auto_scan(self, *_args: object, delay_ms: int = 700) -> None:
+        if self._auto_scan_after:
+            self.after_cancel(self._auto_scan_after)
+            self._auto_scan_after = None
+        if not self.auto_scan_var.get():
+            return
+        folder = self.folder_var.get().strip()
+        if not folder or not Path(folder).expanduser().is_dir():
+            return
+        self._auto_scan_after = self.after(delay_ms, self._scan)
+
+    def _scan_worker(self, folder: str, generation: int, sort_mode: str, sort_direction: str, recursive: bool) -> None:
+        try:
+            files = scan_folder(folder, recursive, sort_mode, sort_direction)
+            self.events.put(("scan_complete", (generation, files)))
+        except Exception as exc:
+            self.events.put(("error", str(exc)))
+
+    def _merge(self) -> None:
+        if not self.files:
+            messagebox.showwarning("No PDFs", "Scan a folder first.")
+            return
+        if self._merge_thread and self._merge_thread.is_alive():
+            messagebox.showwarning("Merge running", "A merge is already running.")
+            return
+        output = self.output_var.get().strip()
+        if not output:
+            messagebox.showwarning("Output required", "Choose an output PDF path.")
+            return
+        output_folder = Path(output).expanduser().resolve().parent
+        output_folder.mkdir(parents=True, exist_ok=True)
+        total_size = sum(item.size for item in self.files)
+        free_space = shutil.disk_usage(output_folder).free
+        if free_space < total_size * 2:
+            if not messagebox.askyesno(
+                "Low disk space",
+                "Free disk space may be low for this merge.\n\nContinue anyway?",
+            ):
+                return
+        estimate = self._estimate_output_count()
+        if not messagebox.askyesno("Start merge", f"Ready to merge {len(self.files)} PDF(s) into {estimate} output file(s)?"):
+            return
+        self.status_var.set("Merging started...")
+        self._log(f"Merging {len(self.files)} PDF(s) into {estimate} output file(s).")
+        self.progress_var.set(0)
+        self._stop_event.clear()
+        self._pause_event.clear()
+        self.start_button.configure(state=tk.DISABLED)
+        self.pause_button.configure(state=tk.NORMAL, text="Pause")
+        self.cancel_button.configure(state=tk.NORMAL)
+        merge_files = list(self.files)
+        cover = self.cover_var.get().strip()
+        if cover:
+            cover_path = Path(cover).expanduser().resolve()
+            if not cover_path.is_file() or cover_path.suffix.casefold() != ".pdf":
+                messagebox.showwarning("Cover PDF", "Choose a valid cover PDF.")
+                return
+            if cover_path not in {item.path for item in merge_files}:
+                stat = cover_path.stat()
+                merge_files.insert(0, PdfInfo(cover_path, cover_path.name, stat.st_size, stat.st_ctime, stat.st_mtime, ()))
+        settings = {
+            "files": merge_files,
+            "mode": "chunks" if self.mode_var.get() == "chunks" else "single",
+            "chunk_size": int(self.chunk_var.get()),
+            "batch_size": int(self.batch_var.get()),
+            "workers": int(self.worker_var.get()),
+            "compression": COMPRESSION_LABELS[self.compression_var.get()],
+            "skip_existing": self.resume_var.get() and self.mode_var.get() == "chunks",
+            "bookmarks": self.bookmark_var.get(),
+            "password": self.password_var.get() or None,
+        }
+        self._merge_thread = threading.Thread(target=self._merge_worker, args=(output, settings), daemon=True)
+        self._merge_thread.start()
+
+    def _merge_worker(self, output: str, settings: dict[str, object]) -> None:
+        try:
+            def progress(done: int, total: int, message: str) -> None:
+                percent = min(100, round((done / total) * 100, 2))
+                self.events.put(("progress", (percent, message)))
+
+            result = merge_collection(
+                settings["files"],
+                output,
+                settings["mode"],
+                settings["chunk_size"],
+                settings["batch_size"],
+                settings["workers"],
+                settings["compression"],
+                settings["skip_existing"],
+                self._stop_event,
+                self._pause_event,
+                progress,
+                settings["bookmarks"],
+                settings["password"],
+            )
+            self.events.put(("merge_complete", result))
+        except Exception as exc:
+            self.events.put(("error", str(exc)))
+
+    def _drain_events(self) -> None:
+        try:
+            while True:
+                event, payload = self.events.get_nowait()
+                if event == "scan_complete":
+                    generation, files = payload
+                    if generation == self._scan_generation:
+                        self._show_files(files)
+                elif event == "progress":
+                    percent, message = payload
+                    self.progress_var.set(percent)
+                    self.status_var.set(str(message))
+                    self._log(str(message))
+                elif event == "merge_complete":
+                    result: MergeResult = payload
+                    outputs = result.outputs
+                    self.progress_var.set(0 if result.cancelled else 100)
+                    self._set_merge_buttons_idle()
+                    if result.cancelled:
+                        self.status_var.set("Merge cancelled. Completed chunk outputs can be safely resumed.")
+                        self._log("Merge cancelled. Resume uses the saved job manifest.")
+                        messagebox.showinfo("Merge cancelled", "The merge was cancelled. Completed chunks were preserved and can be safely resumed.")
+                        continue
+                    failure_text = f" Skipped {len(result.failures)} failed PDF(s)." if result.failures else ""
+                    report_text = f"\nFailure report: {result.report_path}" if result.report_path else ""
+                    self.status_var.set(f"Done. Created {len(outputs)} PDF file(s).{failure_text}")
+                    self._log(f"Done. Created {len(outputs)} PDF file(s).{failure_text}")
+                    self._record_recent_job(outputs)
+                    messagebox.showinfo("Merge complete", f"Created {len(outputs)} PDF file(s).{failure_text}{report_text}")
+                elif event == "duplicates_complete":
+                    groups, report = payload
+                    count = sum(len(group) for group in groups)
+                    if not groups:
+                        messagebox.showinfo("Duplicates", "No byte-identical duplicate PDFs found.")
+                        self._log("No byte-identical duplicate PDFs found.")
+                        continue
+                    lines = ["Verified duplicate PDFs", "=======================", ""]
+                    for group in groups:
+                        lines.extend(str(item.path) for item in group)
+                        lines.append("")
+                    report.write_text("\n".join(lines), encoding="utf-8")
+                    self._log(f"Found {count} verified duplicate(s). Report: {report}")
+                    messagebox.showinfo("Duplicates", f"Found {count} verified duplicate(s).\nReport saved:\n{report}")
+                elif event == "error":
+                    self._set_merge_buttons_idle()
+                    self.status_var.set("Error")
+                    self._log(f"Error: {payload}")
+                    messagebox.showerror("OpenMerger", str(payload))
+        except queue.Empty:
+            pass
+        self.after(150, self._drain_events)
+
+    def _show_files(self, files: list[PdfInfo]) -> None:
+        self.files = files
+        self.page_index = 0
+        self._refresh_tree()
+        total_size = format_size(sum(item.size for item in files))
+        shown = " Showing first 10,000 rows." if len(files) > 10000 else ""
+        chunks = self._estimate_output_count()
+        self.status_var.set(f"Found {len(files)} PDF(s), total {total_size}, output {chunks} file(s).{shown}")
+        self._log(f"Found {len(files)} PDF(s), total {total_size}, output {chunks} file(s).")
+
+    def _refresh_tree(self) -> None:
+        query = self.search_var.get().strip().casefold()
+        matches = [index for index, item in enumerate(self.files) if not query or query in item.name.casefold() or query in str(item.path).casefold()]
+        max_page = max(0, (len(matches) - 1) // self.page_size)
+        self.page_index = min(self.page_index, max_page)
+        start = self.page_index * self.page_size
+        self.visible_indexes = matches[start : start + self.page_size]
+        self.visible_files = [self.files[index] for index in self.visible_indexes]
+        self.tree.delete(*self.tree.get_children())
+        for index, item in enumerate(self.visible_files):
+            self.tree.insert("", tk.END, iid=str(index), values=(item.name, item.created_label, item.size_label, str(item.path)))
+        page_count = max(1, max_page + 1)
+        self.page_label.configure(text=f"{len(matches):,} match(es) · page {self.page_index + 1}/{page_count}")
+
+    def _queue_refresh(self, *_args: object) -> None:
+        if self._refresh_after:
+            self.after_cancel(self._refresh_after)
+        self._refresh_after = self.after(200, self._refresh_tree)
+
+    def _change_page(self, direction: int) -> None:
+        self.page_index = max(0, self.page_index + direction)
+        self._refresh_tree()
+
+    def _selected_file_indexes(self) -> list[int]:
+        indexes: list[int] = []
+        for item_id in self.tree.selection():
+            try:
+                indexes.append(self.visible_indexes[int(item_id)])
+            except (IndexError, ValueError):
+                continue
+        return sorted(set(indexes))
+
+    def _move_selected(self, direction: int) -> None:
+        indexes = self._selected_file_indexes()
+        if not indexes:
+            return
+        if direction < 0:
+            iterable = indexes
+        else:
+            iterable = reversed(indexes)
+        for index in iterable:
+            new_index = index + direction
+            if 0 <= new_index < len(self.files):
+                self.files[index], self.files[new_index] = self.files[new_index], self.files[index]
+        self._refresh_tree()
+        self._log("Manual order updated.")
+
+    def _remove_selected(self) -> None:
+        indexes = self._selected_file_indexes()
+        if not indexes:
+            return
+        for index in reversed(indexes):
+            del self.files[index]
+        self._refresh_tree()
+        self._log(f"Removed {len(indexes)} PDF(s) from merge list.")
+
+    def _find_duplicates(self) -> None:
+        seen: dict[tuple[str, int], list[PdfInfo]] = {}
+        for item in self.files:
+            seen.setdefault((item.name.casefold(), item.size), []).append(item)
+        candidates = [group for group in seen.values() if len(group) > 1]
+        if not candidates:
+            messagebox.showinfo("Duplicates", "No same-name and same-size duplicates found.")
+            return
+        report = Path(self.output_var.get()).expanduser().resolve().parent / "duplicate_pdfs.txt"
+        self._log(f"Verifying {sum(len(group) for group in candidates)} duplicate candidate(s) with SHA-256...")
+        threading.Thread(target=self._duplicate_worker, args=(candidates, report), daemon=True).start()
+
+    def _duplicate_worker(self, candidates: list[list[PdfInfo]], report: Path) -> None:
+        try:
+            verified: list[list[PdfInfo]] = []
+            for group in candidates:
+                by_hash: dict[str, list[PdfInfo]] = {}
+                for item in group:
+                    digest = hashlib.sha256()
+                    with item.path.open("rb") as handle:
+                        for block in iter(lambda: handle.read(1024 * 1024), b""):
+                            digest.update(block)
+                    by_hash.setdefault(digest.hexdigest(), []).append(item)
+                verified.extend(group for group in by_hash.values() if len(group) > 1)
+            self.events.put(("duplicates_complete", (verified, report)))
+        except Exception as exc:
+            self.events.put(("error", str(exc)))
+
+    def _toggle_pause(self) -> None:
+        if self._pause_event.is_set():
+            self._pause_event.clear()
+            self.pause_button.configure(text="Pause")
+            self._log("Merge resumed.")
+        else:
+            self._pause_event.set()
+            self.pause_button.configure(text="Resume")
+            self._log("Merge paused.")
+
+    def _cancel_merge(self) -> None:
+        self._stop_event.set()
+        self._pause_event.clear()
+        self._log("Cancel requested. Waiting for current batch to stop...")
+
+    def _set_merge_buttons_idle(self) -> None:
+        self.start_button.configure(state=tk.NORMAL)
+        self.pause_button.configure(state=tk.DISABLED, text="Pause")
+        self.cancel_button.configure(state=tk.DISABLED)
+
+    def _open_output_folder(self) -> None:
+        folder = Path(self.output_var.get()).expanduser().resolve().parent
+        folder.mkdir(parents=True, exist_ok=True)
+        os.startfile(folder)
+
+    def _estimate_output_count(self) -> int:
+        if self.mode_var.get() != "chunks":
+            return 1 if self.files else 0
+        chunk_size = max(1, int(self.chunk_var.get()))
+        return (len(self.files) + chunk_size - 1) // chunk_size
+
+    def _log(self, message: str) -> None:
+        self.log_box.insert(tk.END, f"{message}\n")
+        self.log_box.see(tk.END)
+
+    def _settings_payload(self) -> dict[str, object]:
+        return {
+            "folder": self.folder_var.get(),
+            "output": self.output_var.get(),
+            "sort": self.sort_var.get(),
+            "direction": self.direction_var.get(),
+            "compression": self.compression_var.get(),
+            "recursive": self.recursive_var.get(),
+            "mode": self.mode_var.get(),
+            "chunk_size": self.chunk_var.get(),
+            "batch_size": self.batch_var.get(),
+            "workers": self.worker_var.get(),
+            "resume": self.resume_var.get(),
+            "bookmarks": self.bookmark_var.get(),
+            "cover": self.cover_var.get(),
+        }
+
+    def _save_preset(self) -> None:
+        self.settings_path.parent.mkdir(parents=True, exist_ok=True)
+        previous = self._read_settings()
+        previous["preset"] = self._settings_payload()
+        self.settings_path.write_text(json.dumps(previous, indent=2), encoding="utf-8")
+        self._log("Preset saved.")
+
+    def _load_preset(self) -> None:
+        preset = self._read_settings().get("preset")
+        if not isinstance(preset, dict):
+            messagebox.showinfo("OpenMerger", "No saved preset yet.")
+            return
+        string_vars = {"folder": self.folder_var, "output": self.output_var, "sort": self.sort_var, "direction": self.direction_var, "compression": self.compression_var, "mode": self.mode_var, "cover": self.cover_var}
+        bool_vars = {"recursive": self.recursive_var, "resume": self.resume_var, "bookmarks": self.bookmark_var}
+        int_vars = {"chunk_size": self.chunk_var, "batch_size": self.batch_var, "workers": self.worker_var}
+        for key, variable in string_vars.items():
+            if key in preset:
+                variable.set(str(preset[key]))
+        for key, variable in bool_vars.items():
+            if key in preset:
+                variable.set(bool(preset[key]))
+        for key, variable in int_vars.items():
+            if key in preset:
+                variable.set(int(preset[key]))
+        self._log("Preset loaded.")
+
+    def _record_recent_job(self, outputs: list[Path]) -> None:
+        data = self._read_settings()
+        recent = data.get("recent_jobs", [])
+        if not isinstance(recent, list):
+            recent = []
+        recent.insert(0, {"settings": self._settings_payload(), "outputs": [str(path) for path in outputs]})
+        data["recent_jobs"] = recent[:10]
+        self.settings_path.parent.mkdir(parents=True, exist_ok=True)
+        self.settings_path.write_text(json.dumps(data, indent=2), encoding="utf-8")
+
+    def _read_settings(self) -> dict[str, object]:
+        try:
+            value = json.loads(self.settings_path.read_text(encoding="utf-8"))
+            return value if isinstance(value, dict) else {}
+        except (OSError, ValueError):
+            return {}
+
+
+def main() -> None:
+    app = PdfMergerApp()
+    app.mainloop()
