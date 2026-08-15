@@ -34,9 +34,10 @@ COMPRESSION_LABELS = {
 class PdfMergerApp(tk.Tk):
     def __init__(self) -> None:
         super().__init__()
-        self.title("OpenMerger - Fast PDF Merger")
-        self.geometry("900x620")
-        self.minsize(780, 520)
+        self.title("OpenMerger")
+        self.geometry("1080x760")
+        self.minsize(900, 620)
+        self.configure(background="#f4f7fb")
 
         self.files: list[PdfInfo] = []
         self.visible_files: list[PdfInfo] = []
@@ -64,6 +65,7 @@ class PdfMergerApp(tk.Tk):
         self.batch_var = tk.IntVar(value=50)
         self.worker_var = tk.IntVar(value=1)
         self.status_var = tk.StringVar(value="Choose a folder to begin.")
+        self.summary_var = tk.StringVar(value="No PDFs loaded yet")
         self.progress_var = tk.DoubleVar(value=0)
         self._auto_scan_after: str | None = None
         self._refresh_after: str | None = None
@@ -72,25 +74,62 @@ class PdfMergerApp(tk.Tk):
         self._stop_event = threading.Event()
         self._pause_event = threading.Event()
 
+        self._configure_style()
         self._build()
         self.folder_var.trace_add("write", self._queue_auto_scan)
         self.search_var.trace_add("write", self._queue_refresh)
         self.after(150, self._drain_events)
 
+    def _configure_style(self) -> None:
+        style = ttk.Style(self)
+        try:
+            style.theme_use("clam")
+        except tk.TclError:
+            pass
+        base_font = ("Segoe UI", 10)
+        style.configure(".", font=base_font, background="#f4f7fb", foreground="#172033")
+        style.configure("App.TFrame", background="#f4f7fb")
+        style.configure("Header.TFrame", background="#172a46")
+        style.configure("HeaderTitle.TLabel", background="#172a46", foreground="white", font=("Segoe UI Semibold", 24))
+        style.configure("HeaderSub.TLabel", background="#172a46", foreground="#c6d6ee", font=("Segoe UI", 10))
+        style.configure("Summary.TLabel", background="#e9f0fb", foreground="#254264", font=("Segoe UI Semibold", 10), padding=(12, 8))
+        style.configure("Card.TLabelframe", background="#ffffff", bordercolor="#dbe4f0", relief="solid")
+        style.configure("Card.TLabelframe.Label", background="#ffffff", foreground="#1f3654", font=("Segoe UI Semibold", 10))
+        style.configure("Card.TFrame", background="#ffffff")
+        style.configure("TEntry", fieldbackground="#ffffff", padding=7)
+        style.configure("TCombobox", fieldbackground="#ffffff", padding=5)
+        style.configure("TSpinbox", fieldbackground="#ffffff", padding=5)
+        style.configure("Accent.TButton", background="#2563eb", foreground="white", borderwidth=0, padding=(14, 8), font=("Segoe UI Semibold", 10))
+        style.map("Accent.TButton", background=[("active", "#1d4ed8"), ("disabled", "#9db9ef")])
+        style.configure("Quiet.TButton", background="#e9f0fb", foreground="#254264", borderwidth=0, padding=(10, 7))
+        style.map("Quiet.TButton", background=[("active", "#d7e5f8")])
+        style.configure("Treeview", background="#ffffff", fieldbackground="#ffffff", foreground="#1f2937", rowheight=28, borderwidth=0)
+        style.configure("Treeview.Heading", background="#e9f0fb", foreground="#29415f", font=("Segoe UI Semibold", 9), relief="flat", padding=(8, 7))
+        style.map("Treeview", background=[("selected", "#dbeafe")], foreground=[("selected", "#123a72")])
+        style.configure("Accent.Horizontal.TProgressbar", background="#2563eb", troughcolor="#dce6f5", bordercolor="#dce6f5", thickness=8)
+
     def _build(self) -> None:
-        root = ttk.Frame(self, padding=14)
+        header = ttk.Frame(self, style="Header.TFrame", padding=(24, 18))
+        header.pack(fill=tk.X)
+        ttk.Label(header, text="OpenMerger", style="HeaderTitle.TLabel").pack(anchor=tk.W)
+        ttk.Label(header, text="Merge large PDF collections locally, safely, and in the order you choose.", style="HeaderSub.TLabel").pack(anchor=tk.W, pady=(2, 0))
+
+        root = ttk.Frame(self, padding=18, style="App.TFrame")
         root.pack(fill=tk.BOTH, expand=True)
 
-        source = ttk.LabelFrame(root, text="Source PDFs", padding=10)
+        summary = ttk.Label(root, textvariable=self.summary_var, style="Summary.TLabel")
+        summary.pack(fill=tk.X, pady=(0, 12))
+
+        source = ttk.LabelFrame(root, text="1. Choose source PDFs", padding=12, style="Card.TLabelframe")
         source.pack(fill=tk.X)
         folder_entry = ttk.Entry(source, textvariable=self.folder_var)
         folder_entry.pack(side=tk.LEFT, fill=tk.X, expand=True, padx=(0, 8))
         folder_entry.bind("<Return>", lambda _event: self._scan())
-        ttk.Button(source, text="Browse Folder", command=self._browse_folder).pack(side=tk.LEFT, padx=(0, 8))
-        ttk.Button(source, text="Scan PDFs", command=self._scan).pack(side=tk.LEFT)
+        ttk.Button(source, text="Browse folder", command=self._browse_folder, style="Quiet.TButton").pack(side=tk.LEFT, padx=(0, 8))
+        ttk.Button(source, text="Scan PDFs", command=self._scan, style="Accent.TButton").pack(side=tk.LEFT)
 
-        options = ttk.LabelFrame(root, text="Sorting and merge options", padding=10)
-        options.pack(fill=tk.X, pady=10)
+        options = ttk.LabelFrame(root, text="2. Set merge options", padding=12, style="Card.TLabelframe")
+        options.pack(fill=tk.X, pady=12)
 
         ttk.Label(options, text="Sort by").grid(row=0, column=0, sticky=tk.W)
         sort_box = ttk.Combobox(options, textvariable=self.sort_var, values=list(SORT_LABELS), state="readonly", width=22)
@@ -121,25 +160,26 @@ class PdfMergerApp(tk.Tk):
         gs_label = "Ghostscript detected." if ghostscript_available() else "Ghostscript not found: strong compression unavailable."
         ttk.Label(options, text=f"Old PC tip: workers 1, batch 50. {gs_label}").grid(row=3, column=2, columnspan=4, sticky=tk.W, pady=(10, 0))
 
-        output = ttk.LabelFrame(root, text="Output", padding=10)
+        output = ttk.LabelFrame(root, text="3. Choose output", padding=12, style="Card.TLabelframe")
         output.pack(fill=tk.X)
         ttk.Entry(output, textvariable=self.output_var).pack(side=tk.LEFT, fill=tk.X, expand=True, padx=(0, 8))
-        ttk.Button(output, text="Output Folder", command=self._browse_output_folder).pack(side=tk.LEFT, padx=(0, 8))
-        ttk.Button(output, text="Save As", command=self._browse_output).pack(side=tk.LEFT)
-        ttk.Button(output, text="Add Cover", command=self._browse_cover).pack(side=tk.LEFT, padx=(8, 0))
-        ttk.Button(output, text="Save Preset", command=self._save_preset).pack(side=tk.LEFT, padx=(8, 0))
-        ttk.Button(output, text="Load Preset", command=self._load_preset).pack(side=tk.LEFT, padx=(8, 0))
+        ttk.Button(output, text="Output folder", command=self._browse_output_folder, style="Quiet.TButton").pack(side=tk.LEFT, padx=(0, 8))
+        ttk.Button(output, text="Save as", command=self._browse_output, style="Quiet.TButton").pack(side=tk.LEFT)
+        ttk.Button(output, text="Add cover", command=self._browse_cover, style="Quiet.TButton").pack(side=tk.LEFT, padx=(8, 0))
+        ttk.Button(output, text="Save preset", command=self._save_preset, style="Quiet.TButton").pack(side=tk.LEFT, padx=(8, 0))
+        ttk.Button(output, text="Load preset", command=self._load_preset, style="Quiet.TButton").pack(side=tk.LEFT, padx=(8, 0))
 
-        list_frame = ttk.LabelFrame(root, text="Scanned PDFs", padding=10)
-        list_frame.pack(fill=tk.BOTH, expand=True, pady=10)
+        list_frame = ttk.LabelFrame(root, text="4. Review merge order", padding=12, style="Card.TLabelframe")
+        list_frame.pack(fill=tk.BOTH, expand=True, pady=12)
         toolbar = ttk.Frame(list_frame)
         toolbar.pack(fill=tk.X, pady=(0, 8))
         ttk.Label(toolbar, text="Search").pack(side=tk.LEFT)
         ttk.Entry(toolbar, textvariable=self.search_var, width=28).pack(side=tk.LEFT, padx=(6, 12))
-        ttk.Button(toolbar, text="Move Up", command=lambda: self._move_selected(-1)).pack(side=tk.LEFT, padx=(0, 6))
-        ttk.Button(toolbar, text="Move Down", command=lambda: self._move_selected(1)).pack(side=tk.LEFT, padx=(0, 6))
-        ttk.Button(toolbar, text="Remove Selected", command=self._remove_selected).pack(side=tk.LEFT, padx=(0, 6))
-        ttk.Button(toolbar, text="Find Duplicates", command=self._find_duplicates).pack(side=tk.LEFT)
+        ttk.Button(toolbar, text="Move up", command=lambda: self._move_selected(-1), style="Quiet.TButton").pack(side=tk.LEFT, padx=(0, 6))
+        ttk.Button(toolbar, text="Move down", command=lambda: self._move_selected(1), style="Quiet.TButton").pack(side=tk.LEFT, padx=(0, 6))
+        ttk.Button(toolbar, text="Remove", command=self._remove_selected, style="Quiet.TButton").pack(side=tk.LEFT, padx=(0, 6))
+        ttk.Button(toolbar, text="Verify duplicates", command=self._find_duplicates, style="Quiet.TButton").pack(side=tk.LEFT)
+        ttk.Button(toolbar, text="Clear list", command=self._clear_files, style="Quiet.TButton").pack(side=tk.LEFT, padx=(6, 0))
         self.page_label = ttk.Label(toolbar, text="")
         self.page_label.pack(side=tk.RIGHT)
         ttk.Button(toolbar, text="Next", command=lambda: self._change_page(1)).pack(side=tk.RIGHT, padx=(6, 0))
@@ -159,22 +199,22 @@ class PdfMergerApp(tk.Tk):
         self.tree.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
         scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
 
-        log_frame = ttk.LabelFrame(root, text="Status Log", padding=8)
-        log_frame.pack(fill=tk.X, pady=(0, 10))
+        log_frame = ttk.LabelFrame(root, text="Activity", padding=10, style="Card.TLabelframe")
+        log_frame.pack(fill=tk.X, pady=(0, 12))
         self.log_box = tk.Text(log_frame, height=4, wrap=tk.WORD)
         self.log_box.pack(fill=tk.X)
 
         bottom = ttk.Frame(root)
         bottom.pack(fill=tk.X)
-        ttk.Button(bottom, text="Open Output Folder", command=self._open_output_folder).pack(side=tk.RIGHT, padx=(8, 0))
-        self.start_button = ttk.Button(bottom, text="Start Merge", command=self._merge)
+        ttk.Button(bottom, text="Open output folder", command=self._open_output_folder, style="Quiet.TButton").pack(side=tk.RIGHT, padx=(8, 0))
+        self.start_button = ttk.Button(bottom, text="Start merge", command=self._merge, style="Accent.TButton")
         self.start_button.pack(side=tk.RIGHT)
         self.cancel_button = ttk.Button(bottom, text="Cancel", command=self._cancel_merge, state=tk.DISABLED)
         self.cancel_button.pack(side=tk.RIGHT, padx=(8, 0))
         self.pause_button = ttk.Button(bottom, text="Pause", command=self._toggle_pause, state=tk.DISABLED)
         self.pause_button.pack(side=tk.RIGHT)
-        ttk.Progressbar(bottom, variable=self.progress_var, maximum=100).pack(side=tk.LEFT, fill=tk.X, expand=True, padx=(0, 12))
-        ttk.Label(root, textvariable=self.status_var).pack(fill=tk.X, pady=(8, 0))
+        ttk.Progressbar(bottom, variable=self.progress_var, maximum=100, style="Accent.Horizontal.TProgressbar").pack(side=tk.LEFT, fill=tk.X, expand=True, padx=(0, 12))
+        ttk.Label(root, textvariable=self.status_var, foreground="#52657d").pack(fill=tk.X, pady=(10, 0))
 
     def _browse_folder(self) -> None:
         folder = filedialog.askdirectory(title="Choose folder containing PDFs")
@@ -212,6 +252,7 @@ class PdfMergerApp(tk.Tk):
             messagebox.showwarning("Folder not found", "The folder path does not exist.")
             return
         self.status_var.set("Scanning PDFs...")
+        self.summary_var.set("Scanning folder…")
         self._log("Scanning PDFs...")
         self._scan_generation += 1
         sort_mode = SORT_LABELS[self.sort_var.get()]
@@ -378,6 +419,7 @@ class PdfMergerApp(tk.Tk):
         shown = " Showing first 10,000 rows." if len(files) > 10000 else ""
         chunks = self._estimate_output_count()
         self.status_var.set(f"Found {len(files)} PDF(s), total {total_size}, output {chunks} file(s).{shown}")
+        self.summary_var.set(f"{len(files):,} PDFs ready to merge  •  {total_size} total  •  {chunks} output file(s)")
         self._log(f"Found {len(files)} PDF(s), total {total_size}, output {chunks} file(s).")
 
     def _refresh_tree(self) -> None:
@@ -434,7 +476,21 @@ class PdfMergerApp(tk.Tk):
         for index in reversed(indexes):
             del self.files[index]
         self._refresh_tree()
+        self.summary_var.set(f"{len(self.files):,} PDFs remain in the merge list")
         self._log(f"Removed {len(indexes)} PDF(s) from merge list.")
+
+    def _clear_files(self) -> None:
+        if not self.files:
+            return
+        if not messagebox.askyesno("Clear merge list", "Remove all scanned PDFs from the current merge list?"):
+            return
+        self.files = []
+        self.visible_files = []
+        self.visible_indexes = []
+        self._refresh_tree()
+        self.summary_var.set("No PDFs loaded yet")
+        self.status_var.set("Merge list cleared. Choose a folder to begin.")
+        self._log("Cleared the merge list.")
 
     def _find_duplicates(self) -> None:
         seen: dict[tuple[str, int], list[PdfInfo]] = {}
