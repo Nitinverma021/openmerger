@@ -66,6 +66,11 @@ def test_local_toolbox_operations(tmp_path: Path) -> None:
     image.close()
     source = tmp_path / "images.pdf"
     assert images_to_pdf([image_path], source) == 1
+    print_ready = tmp_path / "print-ready.pdf"
+    assert images_to_pdf([image_path], print_ready, page_preset="a4", margin_mm=10, dpi=150) == 1
+    with pikepdf.Pdf.open(print_ready) as document:
+        media_box = document.pages[0].mediabox
+        assert [round(float(media_box[index])) for index in (2, 3)] == [595, 842]
     protected = tmp_path / "protected.pdf"
     protect_pdf(source, protected, "secret")
     unlocked = tmp_path / "unlocked.pdf"

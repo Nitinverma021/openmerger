@@ -232,8 +232,8 @@ class PdfMergerApp(tk.Tk):
         window = tk.Toplevel(self)
         self.toolbox_window = window
         window.title("OpenMerger PDF Toolbox")
-        window.geometry("760x520")
-        window.minsize(650, 460)
+        window.geometry("760x590")
+        window.minsize(650, 520)
         window.transient(self)
         window.protocol("WM_DELETE_WINDOW", lambda: self._close_toolbox(window))
         frame = ttk.Frame(window, padding=16, style="App.TFrame")
@@ -253,6 +253,10 @@ class PdfMergerApp(tk.Tk):
         title = tk.StringVar()
         author = tk.StringVar()
         subject = tk.StringVar()
+        image_preset = tk.StringVar(value="Print A4")
+        image_fit = tk.StringVar(value="Fit with margins")
+        image_margin = tk.DoubleVar(value=8)
+        image_dpi = tk.IntVar(value=150)
 
         labels = [
             "Extract / rotate pages",
@@ -305,6 +309,12 @@ class PdfMergerApp(tk.Tk):
         ttk.Entry(frame, textvariable=author, width=18).grid(row=8, column=3, sticky=tk.W, pady=(10, 0))
         ttk.Label(frame, text="Subject").grid(row=9, column=0, sticky=tk.W, pady=(10, 0))
         ttk.Entry(frame, textvariable=subject).grid(row=9, column=1, columnspan=3, sticky=tk.EW, padx=8, pady=(10, 0))
+        ttk.Label(frame, text="Image layout").grid(row=10, column=0, sticky=tk.W, pady=(10, 0))
+        ttk.Combobox(frame, textvariable=image_preset, values=("Original size", "Print A4", "US Letter", "Poster", "Social portrait", "Wide banner"), state="readonly", width=18).grid(row=10, column=1, sticky=tk.W, padx=8, pady=(10, 0))
+        ttk.Combobox(frame, textvariable=image_fit, values=("Fit with margins", "Fill and crop"), state="readonly", width=17).grid(row=10, column=2, sticky=tk.W, pady=(10, 0))
+        ttk.Spinbox(frame, from_=0, to=30, increment=1, textvariable=image_margin, width=5).grid(row=10, column=3, sticky=tk.W, pady=(10, 0))
+        ttk.Label(frame, text="Margin mm  •  150 DPI is best for screen; 300 DPI for print.").grid(row=11, column=0, columnspan=3, sticky=tk.W, pady=(6, 0))
+        ttk.Combobox(frame, textvariable=image_dpi, values=(150, 300), state="readonly", width=5).grid(row=11, column=3, sticky=tk.W, pady=(6, 0))
         frame.columnconfigure(1, weight=1)
         frame.columnconfigure(2, weight=1)
 
@@ -325,14 +335,15 @@ class PdfMergerApp(tk.Tk):
             values = {
                 "operation": operation.get(), "source": source.get(), "output": output.get(), "pages": pages.get(),
                 "rotation": rotation.get(), "split": split_count.get(), "password": password.get(), "owner": owner_password.get(),
-                "title": title.get(), "author": author.get(), "subject": subject.get(),
+                "title": title.get(), "author": author.get(), "subject": subject.get(), "image_preset": image_preset.get(),
+                "image_fit": image_fit.get(), "image_margin": image_margin.get(), "image_dpi": image_dpi.get(),
             }
             if not values["source"] or not values["output"]:
                 messagebox.showwarning("PDF toolbox", "Choose an input and output file first.")
                 return
             threading.Thread(target=self._tool_worker, args=(values,), daemon=True).start()
 
-        ttk.Button(frame, text="Run tool", command=run_tool, style="Accent.TButton").grid(row=10, column=3, sticky=tk.E, pady=(18, 0))
+        ttk.Button(frame, text="Run tool", command=run_tool, style="Accent.TButton").grid(row=12, column=3, sticky=tk.E, pady=(18, 0))
 
     def _close_toolbox(self, window: tk.Toplevel) -> None:
         if window.winfo_exists():
@@ -351,7 +362,15 @@ class PdfMergerApp(tk.Tk):
             output.parent.mkdir(parents=True, exist_ok=True)
             password = str(values["password"]) or None
             if operation == "Images to PDF":
-                count = images_to_pdf([Path(path) for path in str(values["source"]).split("|")], output)
+                presets = {
+                    "Original size": "original", "Print A4": "a4", "US Letter": "letter", "Poster": "poster",
+                    "Social portrait": "social", "Wide banner": "banner",
+                }
+                count = images_to_pdf(
+                    [Path(path) for path in str(values["source"]).split("|")], output,
+                    presets[str(values["image_preset"])], "contain" if values["image_fit"] == "Fit with margins" else "cover",
+                    float(values["image_margin"]), int(values["image_dpi"]),
+                )
                 message = f"Created {output.name} from {count} image(s)."
             else:
                 source = Path(str(values["source"])).expanduser().resolve()
