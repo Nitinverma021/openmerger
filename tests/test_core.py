@@ -1,8 +1,10 @@
 from pathlib import Path
 
 import pikepdf
+from PIL import Image
 
 from pdf_fast_merger.core import PdfInfo, merge_collection, merge_paths, natural_key, sort_pdfs
+from pdf_fast_merger.operations import images_to_pdf, protect_pdf, unlock_pdf, update_metadata
 
 
 def make_pdf(path: Path) -> PdfInfo:
@@ -55,3 +57,21 @@ def test_output_cannot_be_source(tmp_path: Path) -> None:
         assert "source list" in str(exc)
     else:
         raise AssertionError("expected an output/source collision")
+
+
+def test_local_toolbox_operations(tmp_path: Path) -> None:
+    image_path = tmp_path / "page.png"
+    image = Image.new("RGB", (40, 40), "red")
+    image.save(image_path)
+    image.close()
+    source = tmp_path / "images.pdf"
+    assert images_to_pdf([image_path], source) == 1
+    protected = tmp_path / "protected.pdf"
+    protect_pdf(source, protected, "secret")
+    unlocked = tmp_path / "unlocked.pdf"
+    unlock_pdf(protected, unlocked, "secret")
+    metadata = tmp_path / "metadata.pdf"
+    update_metadata(unlocked, metadata, title="OpenMerger test")
+    with pikepdf.Pdf.open(metadata) as document:
+        assert len(document.pages) == 1
+        assert str(document.docinfo["/Title"]) == "OpenMerger test"

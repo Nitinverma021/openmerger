@@ -11,6 +11,7 @@ from pathlib import Path
 from tkinter import filedialog, messagebox, ttk
 
 from .core import MergeResult, PdfInfo, format_size, ghostscript_available, merge_collection, scan_folder
+from .operations import images_to_pdf, protect_pdf, split_pdf, transform_pdf, unlock_pdf, update_metadata
 
 SORT_LABELS = {
     "Number in filename": "number",
@@ -116,6 +117,7 @@ class PdfMergerApp(tk.Tk):
         header.pack(fill=tk.X)
         ttk.Label(header, text="OpenMerger", style="HeaderTitle.TLabel").pack(anchor=tk.W)
         ttk.Label(header, text="Merge large PDF collections locally, safely, and in the order you choose.", style="HeaderSub.TLabel").pack(anchor=tk.W, pady=(2, 0))
+        ttk.Button(header, text="PDF toolbox", command=self._open_toolbox, style="Quiet.TButton").pack(side=tk.RIGHT, anchor=tk.N, pady=(4, 0))
 
         root = ttk.Frame(self, padding=12, style="App.TFrame")
         root.pack(fill=tk.BOTH, expand=True)
@@ -219,6 +221,140 @@ class PdfMergerApp(tk.Tk):
         ttk.Label(root, textvariable=self.status_var, foreground="#52657d").pack(fill=tk.X, side=tk.BOTTOM, pady=(8, 0))
         list_frame.pack(fill=tk.BOTH, expand=True, pady=(8, 8))
         self._update_mode_controls()
+
+    def _open_toolbox(self) -> None:
+        window = tk.Toplevel(self)
+        window.title("OpenMerger PDF Toolbox")
+        window.geometry("760x520")
+        window.minsize(650, 460)
+        frame = ttk.Frame(window, padding=16, style="App.TFrame")
+        frame.pack(fill=tk.BOTH, expand=True)
+        ttk.Label(frame, text="PDF Toolbox", font=("Segoe UI Semibold", 18)).grid(row=0, column=0, columnspan=4, sticky=tk.W)
+        description = tk.StringVar(value="Choose a local PDF task. Source files are never modified.")
+        ttk.Label(frame, textvariable=description, foreground="#52657d").grid(row=1, column=0, columnspan=4, sticky=tk.W, pady=(2, 14))
+
+        operation = tk.StringVar(value="Extract / rotate pages")
+        source = tk.StringVar()
+        output = tk.StringVar(value=str(Path.home() / "Desktop" / "output.pdf"))
+        pages = tk.StringVar()
+        rotation = tk.IntVar(value=0)
+        split_count = tk.IntVar(value=25)
+        password = tk.StringVar()
+        owner_password = tk.StringVar()
+        title = tk.StringVar()
+        author = tk.StringVar()
+        subject = tk.StringVar()
+
+        labels = [
+            "Extract / rotate pages",
+            "Split PDF",
+            "Images to PDF",
+            "Protect PDF",
+            "Unlock PDF",
+            "Edit metadata",
+        ]
+        ttk.Label(frame, text="Task").grid(row=2, column=0, sticky=tk.W)
+        task_box = ttk.Combobox(frame, textvariable=operation, values=labels, state="readonly", width=28)
+        task_box.grid(row=2, column=1, sticky=tk.W, padx=(8, 0))
+
+        ttk.Label(frame, text="Source").grid(row=3, column=0, sticky=tk.W, pady=(10, 0))
+        ttk.Entry(frame, textvariable=source).grid(row=3, column=1, columnspan=2, sticky=tk.EW, padx=8, pady=(10, 0))
+
+        def choose_source() -> None:
+            if operation.get() == "Images to PDF":
+                selected = filedialog.askopenfilenames(title="Choose images", filetypes=[("Image files", "*.png *.jpg *.jpeg *.bmp *.tif *.tiff *.webp")])
+                if selected:
+                    source.set("|".join(selected))
+            else:
+                selected = filedialog.askopenfilename(title="Choose PDF", filetypes=[("PDF files", "*.pdf")])
+                if selected:
+                    source.set(selected)
+
+        ttk.Button(frame, text="Choose input", command=choose_source, style="Quiet.TButton").grid(row=3, column=3, pady=(10, 0))
+        ttk.Label(frame, text="Output").grid(row=4, column=0, sticky=tk.W, pady=(10, 0))
+        ttk.Entry(frame, textvariable=output).grid(row=4, column=1, columnspan=2, sticky=tk.EW, padx=8, pady=(10, 0))
+        ttk.Button(frame, text="Save as", command=lambda: self._choose_tool_output(output), style="Quiet.TButton").grid(row=4, column=3, pady=(10, 0))
+
+        ttk.Label(frame, text="Pages").grid(row=5, column=0, sticky=tk.W, pady=(10, 0))
+        ttk.Entry(frame, textvariable=pages, width=26).grid(row=5, column=1, sticky=tk.W, padx=8, pady=(10, 0))
+        ttk.Label(frame, text="Example: 1-3,5,8-").grid(row=5, column=2, columnspan=2, sticky=tk.W, pady=(10, 0))
+        ttk.Label(frame, text="Rotate").grid(row=6, column=0, sticky=tk.W, pady=(10, 0))
+        ttk.Combobox(frame, textvariable=rotation, values=(0, 90, 180, 270), state="readonly", width=8).grid(row=6, column=1, sticky=tk.W, padx=8, pady=(10, 0))
+        ttk.Label(frame, text="Split every").grid(row=6, column=2, sticky=tk.E, pady=(10, 0))
+        ttk.Spinbox(frame, from_=1, to=100000, textvariable=split_count, width=8).grid(row=6, column=3, sticky=tk.W, pady=(10, 0))
+        ttk.Label(frame, text="Password").grid(row=7, column=0, sticky=tk.W, pady=(10, 0))
+        ttk.Entry(frame, textvariable=password, show="•", width=26).grid(row=7, column=1, sticky=tk.W, padx=8, pady=(10, 0))
+        ttk.Label(frame, text="Owner password").grid(row=7, column=2, sticky=tk.E, pady=(10, 0))
+        ttk.Entry(frame, textvariable=owner_password, show="•", width=18).grid(row=7, column=3, sticky=tk.W, pady=(10, 0))
+        ttk.Label(frame, text="Title").grid(row=8, column=0, sticky=tk.W, pady=(10, 0))
+        ttk.Entry(frame, textvariable=title).grid(row=8, column=1, sticky=tk.EW, padx=8, pady=(10, 0))
+        ttk.Label(frame, text="Author").grid(row=8, column=2, sticky=tk.E, pady=(10, 0))
+        ttk.Entry(frame, textvariable=author, width=18).grid(row=8, column=3, sticky=tk.W, pady=(10, 0))
+        ttk.Label(frame, text="Subject").grid(row=9, column=0, sticky=tk.W, pady=(10, 0))
+        ttk.Entry(frame, textvariable=subject).grid(row=9, column=1, columnspan=3, sticky=tk.EW, padx=8, pady=(10, 0))
+        frame.columnconfigure(1, weight=1)
+        frame.columnconfigure(2, weight=1)
+
+        def update_help(*_args: object) -> None:
+            messages = {
+                "Extract / rotate pages": "Extract page ranges or rotate all selected pages. Leave Pages blank for every page.",
+                "Split PDF": "Create several PDFs with the chosen number of pages in each output.",
+                "Images to PDF": "Choose one or more images and create one PDF in the same order.",
+                "Protect PDF": "Create a password-protected copy. Password fields are never saved.",
+                "Unlock PDF": "Remove protection from a PDF when you know its current password.",
+                "Edit metadata": "Create a copy with a title, author, and subject.",
+            }
+            description.set(messages[operation.get()])
+
+        task_box.bind("<<ComboboxSelected>>", update_help)
+
+        def run_tool() -> None:
+            values = {
+                "operation": operation.get(), "source": source.get(), "output": output.get(), "pages": pages.get(),
+                "rotation": rotation.get(), "split": split_count.get(), "password": password.get(), "owner": owner_password.get(),
+                "title": title.get(), "author": author.get(), "subject": subject.get(),
+            }
+            if not values["source"] or not values["output"]:
+                messagebox.showwarning("PDF toolbox", "Choose an input and output file first.")
+                return
+            threading.Thread(target=self._tool_worker, args=(values,), daemon=True).start()
+
+        ttk.Button(frame, text="Run tool", command=run_tool, style="Accent.TButton").grid(row=10, column=3, sticky=tk.E, pady=(18, 0))
+
+    def _choose_tool_output(self, variable: tk.StringVar) -> None:
+        path = filedialog.asksaveasfilename(title="Save PDF as", defaultextension=".pdf", filetypes=[("PDF files", "*.pdf")])
+        if path:
+            variable.set(path)
+
+    def _tool_worker(self, values: dict[str, object]) -> None:
+        try:
+            operation = str(values["operation"])
+            output = Path(str(values["output"])).expanduser().resolve()
+            output.parent.mkdir(parents=True, exist_ok=True)
+            password = str(values["password"]) or None
+            if operation == "Images to PDF":
+                count = images_to_pdf([Path(path) for path in str(values["source"]).split("|")], output)
+                message = f"Created {output.name} from {count} image(s)."
+            else:
+                source = Path(str(values["source"])).expanduser().resolve()
+                if operation == "Extract / rotate pages":
+                    count = transform_pdf(source, output, str(values["pages"]) or None, int(values["rotation"]), password)
+                    message = f"Created {output.name} with {count} page(s)."
+                elif operation == "Split PDF":
+                    outputs = split_pdf(source, output, int(values["split"]), password)
+                    message = f"Created {len(outputs)} split PDF(s)."
+                elif operation == "Protect PDF":
+                    protect_pdf(source, output, str(values["password"]), str(values["owner"]) or None)
+                    message = f"Created protected PDF: {output.name}."
+                elif operation == "Unlock PDF":
+                    unlock_pdf(source, output, str(values["password"]))
+                    message = f"Created unlocked PDF: {output.name}."
+                else:
+                    update_metadata(source, output, str(values["title"]), str(values["author"]), str(values["subject"]), password)
+                    message = f"Updated metadata in {output.name}."
+            self.events.put(("tool_complete", message))
+        except Exception as exc:
+            self.events.put(("error", str(exc)))
 
     def _browse_folder(self) -> None:
         folder = filedialog.askdirectory(title="Choose folder containing PDFs")
@@ -421,6 +557,11 @@ class PdfMergerApp(tk.Tk):
                     report.write_text("\n".join(lines), encoding="utf-8")
                     self._log(f"Found {count} verified duplicate(s). Report: {report}")
                     messagebox.showinfo("Duplicates", f"Found {count} verified duplicate(s).\nReport saved:\n{report}")
+                elif event == "tool_complete":
+                    message = str(payload)
+                    self.status_var.set(message)
+                    self._log(message)
+                    messagebox.showinfo("PDF toolbox", message)
                 elif event == "error":
                     self._set_merge_buttons_idle()
                     self.status_var.set("Error")

@@ -18,6 +18,8 @@ OpenMerger processes PDFs locally on your computer. It does not upload PDFs, fil
 - Lets you search, manually move, or remove PDFs before merging.
 - Lets you insert an optional cover PDF and generate filename bookmarks in completed outputs.
 - Supports a per-job PDF password for encrypted inputs; passwords are never persisted.
+- Includes an integrated PDF Toolbox for extracting, rotating, splitting, protecting, unlocking, and updating PDF metadata.
+- Converts PNG, JPG, JPEG, BMP, TIFF, and WebP images into a PDF locally.
 - Can pause/cancel long merges and resume chunk jobs by skipping existing parts.
 - Saves `failed_pdfs.txt` if corrupted PDFs are skipped.
 - Saves `duplicate_pdfs.txt` for same-name and same-size duplicate candidates.
@@ -87,6 +89,18 @@ python -m pdf_fast_merger.operations source.pdf split.pdf --split 25
 ```
 
 Encrypted input can be opened with the optional `--password`; it is never stored in presets, manifests, or reports.
+
+## PDF Toolbox
+
+Click **PDF toolbox** in the app header to run common one-file tasks without leaving OpenMerger. Every tool writes a new output file and refuses to overwrite its source:
+
+- Extract selected pages or rotate them by 90°, 180°, or 270°.
+- Split a PDF into fixed page-count parts.
+- Convert one or more images into one PDF.
+- Protect or unlock a PDF when you know the required password.
+- Set title, author, and subject metadata.
+
+OCR, scanner acquisition, deskewing, and blank-page removal require dedicated local engines such as OCRmyPDF/Tesseract or scanner drivers. They are intentionally not bundled, so OpenMerger remains a small, local-first application.
 
 ## Development
 

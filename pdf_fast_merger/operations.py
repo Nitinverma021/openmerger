@@ -3,7 +3,13 @@
 from __future__ import annotations
 
 import argparse
+from collections.abc import Iterable
 from pathlib import Path
+
+
+def _ensure_new_output(source_path: Path, output_path: Path) -> None:
+    if source_path.expanduser().resolve() == output_path.expanduser().resolve():
+        raise ValueError("Choose a different output file; source PDFs are never overwritten.")
 
 
 def parse_page_ranges(specification: str, page_count: int) -> list[int]:
@@ -35,6 +41,7 @@ def transform_pdf(source_path: Path, output_path: Path, pages: str | None = None
 
     if rotate % 90:
         raise ValueError("Rotation must be a multiple of 90 degrees.")
+    _ensure_new_output(source_path, output_path)
     with pikepdf.Pdf.open(source_path, password=password or "") as source:
         selected = parse_page_ranges(pages, len(source.pages)) if pages else list(range(len(source.pages)))
         destination = pikepdf.Pdf.new()
@@ -59,6 +66,7 @@ def split_pdf(source_path: Path, output_path: Path, pages_per_file: int, passwor
 
     if pages_per_file < 1:
         raise ValueError("Pages per file must be at least 1.")
+    _ensure_new_output(source_path, output_path)
     with pikepdf.Pdf.open(source_path, password=password or "") as source:
         output_paths: list[Path] = []
         for start in range(0, len(source.pages), pages_per_file):
@@ -73,6 +81,69 @@ def split_pdf(source_path: Path, output_path: Path, pages_per_file: int, passwor
             finally:
                 destination.close()
     return output_paths
+
+
+def images_to_pdf(image_paths: Iterable[Path], output_path: Path) -> int:
+    """Create one PDF from image files. Sources are never modified."""
+    from PIL import Image
+
+    paths = list(image_paths)
+    if output_path.expanduser().resolve() in {path.expanduser().resolve() for path in paths}:
+        raise ValueError("Choose a different output file; source images are never overwritten.")
+    images = []
+    try:
+        for path in paths:
+            with Image.open(path) as source:
+                images.append(source.convert("RGB"))
+        if not images:
+            raise ValueError("Choose at least one image.")
+        partial = output_path.with_suffix(output_path.suffix + ".partial")
+        images[0].save(partial, "PDF", save_all=True, append_images=images[1:], resolution=150.0)
+        partial.replace(output_path)
+        return len(images)
+    finally:
+        for image in images:
+            image.close()
+
+
+def update_metadata(source_path: Path, output_path: Path, title: str = "", author: str = "", subject: str = "", password: str | None = None) -> None:
+    import pikepdf
+
+    _ensure_new_output(source_path, output_path)
+    with pikepdf.Pdf.open(source_path, password=password or "") as document:
+        if title:
+            document.docinfo["/Title"] = title
+        if author:
+            document.docinfo["/Author"] = author
+        if subject:
+            document.docinfo["/Subject"] = subject
+        partial = output_path.with_suffix(output_path.suffix + ".partial")
+        document.save(partial)
+        partial.replace(output_path)
+
+
+def protect_pdf(source_path: Path, output_path: Path, user_password: str, owner_password: str | None = None, source_password: str | None = None) -> None:
+    import pikepdf
+
+    if not user_password:
+        raise ValueError("Enter a password to protect the PDF.")
+    _ensure_new_output(source_path, output_path)
+    with pikepdf.Pdf.open(source_path, password=source_password or "") as document:
+        partial = output_path.with_suffix(output_path.suffix + ".partial")
+        document.save(partial, encryption=pikepdf.Encryption(user=user_password, owner=owner_password or user_password, R=6))
+        partial.replace(output_path)
+
+
+def unlock_pdf(source_path: Path, output_path: Path, password: str) -> None:
+    import pikepdf
+
+    if not password:
+        raise ValueError("Enter the current PDF password to unlock it.")
+    _ensure_new_output(source_path, output_path)
+    with pikepdf.Pdf.open(source_path, password=password) as document:
+        partial = output_path.with_suffix(output_path.suffix + ".partial")
+        document.save(partial, encryption=False)
+        partial.replace(output_path)
 
 
 def main() -> None:
