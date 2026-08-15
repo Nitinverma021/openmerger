@@ -45,6 +45,9 @@ class PdfMergerApp(tk.Tk):
         self.page_index = 0
         self.page_size = 500
         self.events: queue.Queue[tuple[str, object]] = queue.Queue()
+        self.log_messages: list[str] = []
+        self.log_window: tk.Toplevel | None = None
+        self.log_box: tk.Text | None = None
         app_data = Path(os.environ.get("APPDATA", Path.home() / ".openmerger")) / "OpenMerger"
         self.settings_path = app_data / "settings.json"
 
@@ -109,18 +112,18 @@ class PdfMergerApp(tk.Tk):
         style.configure("Accent.Horizontal.TProgressbar", background="#2563eb", troughcolor="#dce6f5", bordercolor="#dce6f5", thickness=8)
 
     def _build(self) -> None:
-        header = ttk.Frame(self, style="Header.TFrame", padding=(24, 18))
+        header = ttk.Frame(self, style="Header.TFrame", padding=(22, 10))
         header.pack(fill=tk.X)
         ttk.Label(header, text="OpenMerger", style="HeaderTitle.TLabel").pack(anchor=tk.W)
         ttk.Label(header, text="Merge large PDF collections locally, safely, and in the order you choose.", style="HeaderSub.TLabel").pack(anchor=tk.W, pady=(2, 0))
 
-        root = ttk.Frame(self, padding=18, style="App.TFrame")
+        root = ttk.Frame(self, padding=12, style="App.TFrame")
         root.pack(fill=tk.BOTH, expand=True)
 
         summary = ttk.Label(root, textvariable=self.summary_var, style="Summary.TLabel")
-        summary.pack(fill=tk.X, pady=(0, 12))
+        summary.pack(fill=tk.X, pady=(0, 8))
 
-        source = ttk.LabelFrame(root, text="1. Choose source PDFs", padding=12, style="Card.TLabelframe")
+        source = ttk.LabelFrame(root, text="1. Choose source PDFs", padding=8, style="Card.TLabelframe")
         source.pack(fill=tk.X)
         folder_entry = ttk.Entry(source, textvariable=self.folder_var)
         folder_entry.pack(side=tk.LEFT, fill=tk.X, expand=True, padx=(0, 8))
@@ -128,8 +131,8 @@ class PdfMergerApp(tk.Tk):
         ttk.Button(source, text="Browse folder", command=self._browse_folder, style="Quiet.TButton").pack(side=tk.LEFT, padx=(0, 8))
         ttk.Button(source, text="Scan PDFs", command=self._scan, style="Accent.TButton").pack(side=tk.LEFT)
 
-        options = ttk.LabelFrame(root, text="2. Set merge options", padding=12, style="Card.TLabelframe")
-        options.pack(fill=tk.X, pady=12)
+        options = ttk.LabelFrame(root, text="2. Set merge options", padding=8, style="Card.TLabelframe")
+        options.pack(fill=tk.X, pady=8)
 
         ttk.Label(options, text="Sort by").grid(row=0, column=0, sticky=tk.W)
         sort_box = ttk.Combobox(options, textvariable=self.sort_var, values=list(SORT_LABELS), state="readonly", width=22)
@@ -141,36 +144,39 @@ class PdfMergerApp(tk.Tk):
         ttk.Checkbutton(options, text="Include subfolders", variable=self.recursive_var, command=self._queue_auto_scan).grid(row=0, column=3, sticky=tk.W, padx=8)
         ttk.Checkbutton(options, text="Auto scan folder", variable=self.auto_scan_var, command=self._queue_auto_scan).grid(row=0, column=4, sticky=tk.W, padx=8)
 
-        ttk.Radiobutton(options, text="Make one complete merged PDF", variable=self.mode_var, value="single").grid(row=1, column=0, columnspan=2, sticky=tk.W, pady=(10, 0))
-        ttk.Radiobutton(options, text="Make chunk PDFs", variable=self.mode_var, value="chunks").grid(row=1, column=2, sticky=tk.W, pady=(10, 0))
-        ttk.Label(options, text="PDFs per chunk").grid(row=1, column=3, sticky=tk.E, padx=(8, 4), pady=(10, 0))
-        ttk.Spinbox(options, from_=1, to=100000, textvariable=self.chunk_var, width=8).grid(row=1, column=4, sticky=tk.W, pady=(10, 0))
-
-        ttk.Label(options, text="Internal batch").grid(row=2, column=0, sticky=tk.W, pady=(10, 0))
-        ttk.Spinbox(options, from_=2, to=1000, textvariable=self.batch_var, width=8).grid(row=2, column=1, sticky=tk.W, padx=8, pady=(10, 0))
-        ttk.Label(options, text="Workers").grid(row=2, column=2, sticky=tk.E, padx=8, pady=(10, 0))
-        ttk.Spinbox(options, from_=1, to=4, textvariable=self.worker_var, width=8).grid(row=2, column=3, sticky=tk.W, pady=(10, 0))
-        ttk.Label(options, text="Compression").grid(row=2, column=4, sticky=tk.E, padx=8, pady=(10, 0))
-        ttk.Combobox(options, textvariable=self.compression_var, values=list(COMPRESSION_LABELS), state="readonly", width=24).grid(row=2, column=5, sticky=tk.W, pady=(10, 0))
-        ttk.Checkbutton(options, text="Resume/skip existing chunks", variable=self.resume_var).grid(row=3, column=0, columnspan=2, sticky=tk.W, pady=(10, 0))
-        ttk.Checkbutton(options, text="Add filename bookmarks", variable=self.bookmark_var).grid(row=3, column=2, sticky=tk.W, pady=(10, 0))
-        ttk.Label(options, text="PDF password").grid(row=4, column=0, sticky=tk.W, pady=(10, 0))
-        ttk.Entry(options, textvariable=self.password_var, show="•", width=18).grid(row=4, column=1, sticky=tk.W, padx=8, pady=(10, 0))
-        ttk.Label(options, text="Used only for this job; never saved.").grid(row=4, column=2, columnspan=3, sticky=tk.W, pady=(10, 0))
+        ttk.Radiobutton(options, text="One merged PDF", variable=self.mode_var, value="single", command=self._update_mode_controls).grid(row=1, column=0, sticky=tk.W, pady=(8, 0))
+        ttk.Radiobutton(options, text="Chunk PDFs", variable=self.mode_var, value="chunks", command=self._update_mode_controls).grid(row=1, column=1, sticky=tk.W, pady=(8, 0))
+        self.chunk_label = ttk.Label(options, text="PDFs per chunk")
+        self.chunk_label.grid(row=1, column=2, sticky=tk.E, padx=(12, 4), pady=(8, 0))
+        self.chunk_input = ttk.Spinbox(options, from_=1, to=100000, textvariable=self.chunk_var, width=8)
+        self.chunk_input.grid(row=1, column=3, sticky=tk.W, pady=(8, 0))
+        ttk.Label(options, text="Internal batch").grid(row=1, column=4, sticky=tk.E, padx=(12, 4), pady=(8, 0))
+        ttk.Spinbox(options, from_=2, to=1000, textvariable=self.batch_var, width=6).grid(row=1, column=5, sticky=tk.W, pady=(8, 0))
+        ttk.Label(options, text="Workers").grid(row=1, column=6, sticky=tk.E, padx=(12, 4), pady=(8, 0))
+        ttk.Spinbox(options, from_=1, to=4, textvariable=self.worker_var, width=5).grid(row=1, column=7, sticky=tk.W, pady=(8, 0))
+        ttk.Label(options, text="Compression").grid(row=1, column=8, sticky=tk.E, padx=(12, 4), pady=(8, 0))
+        ttk.Combobox(options, textvariable=self.compression_var, values=list(COMPRESSION_LABELS), state="readonly", width=23).grid(row=1, column=9, sticky=tk.W, pady=(8, 0))
+        self.resume_check = ttk.Checkbutton(options, text="Resume verified chunks", variable=self.resume_var)
+        self.resume_check.grid(row=2, column=0, columnspan=2, sticky=tk.W, pady=(8, 0))
+        ttk.Checkbutton(options, text="Add filename bookmarks", variable=self.bookmark_var).grid(row=2, column=2, columnspan=2, sticky=tk.W, pady=(8, 0))
+        ttk.Label(options, text="PDF password").grid(row=2, column=4, sticky=tk.E, padx=(12, 4), pady=(8, 0))
+        ttk.Entry(options, textvariable=self.password_var, show="•", width=14).grid(row=2, column=5, sticky=tk.W, pady=(8, 0))
         gs_label = "Ghostscript detected." if ghostscript_available() else "Ghostscript not found: strong compression unavailable."
-        ttk.Label(options, text=f"Old PC tip: workers 1, batch 50. {gs_label}").grid(row=3, column=2, columnspan=4, sticky=tk.W, pady=(10, 0))
+        ttk.Label(options, text=f"Password is never saved.  {gs_label}").grid(row=2, column=6, columnspan=4, sticky=tk.W, padx=(12, 0), pady=(8, 0))
 
-        output = ttk.LabelFrame(root, text="3. Choose output", padding=12, style="Card.TLabelframe")
+        output = ttk.LabelFrame(root, text="3. Choose output", padding=8, style="Card.TLabelframe")
         output.pack(fill=tk.X)
-        ttk.Entry(output, textvariable=self.output_var).pack(side=tk.LEFT, fill=tk.X, expand=True, padx=(0, 8))
-        ttk.Button(output, text="Output folder", command=self._browse_output_folder, style="Quiet.TButton").pack(side=tk.LEFT, padx=(0, 8))
-        ttk.Button(output, text="Save as", command=self._browse_output, style="Quiet.TButton").pack(side=tk.LEFT)
-        ttk.Button(output, text="Add cover", command=self._browse_cover, style="Quiet.TButton").pack(side=tk.LEFT, padx=(8, 0))
-        ttk.Button(output, text="Save preset", command=self._save_preset, style="Quiet.TButton").pack(side=tk.LEFT, padx=(8, 0))
-        ttk.Button(output, text="Load preset", command=self._load_preset, style="Quiet.TButton").pack(side=tk.LEFT, padx=(8, 0))
+        output.columnconfigure(0, weight=1)
+        ttk.Entry(output, textvariable=self.output_var).grid(row=0, column=0, sticky=tk.EW, padx=(0, 8))
+        ttk.Button(output, text="Output folder", command=self._browse_output_folder, style="Quiet.TButton").grid(row=0, column=1, padx=(0, 6))
+        ttk.Button(output, text="Save as", command=self._browse_output, style="Quiet.TButton").grid(row=0, column=2, padx=(0, 6))
+        ttk.Button(output, text="Add cover", command=self._browse_cover, style="Quiet.TButton").grid(row=0, column=3, padx=(0, 6))
+        ttk.Button(output, text="Save preset", command=self._save_preset, style="Quiet.TButton").grid(row=0, column=4, padx=(0, 6))
+        ttk.Button(output, text="Load preset", command=self._load_preset, style="Quiet.TButton").grid(row=0, column=5)
+        self.cover_status = ttk.Label(output, text="No cover PDF selected", foreground="#52657d")
+        self.cover_status.grid(row=1, column=0, columnspan=6, sticky=tk.W, pady=(5, 0))
 
-        list_frame = ttk.LabelFrame(root, text="4. Review merge order", padding=12, style="Card.TLabelframe")
-        list_frame.pack(fill=tk.BOTH, expand=True, pady=12)
+        list_frame = ttk.LabelFrame(root, text="4. Review merge order", padding=8, style="Card.TLabelframe")
         toolbar = ttk.Frame(list_frame)
         toolbar.pack(fill=tk.X, pady=(0, 8))
         ttk.Label(toolbar, text="Search").pack(side=tk.LEFT)
@@ -185,7 +191,7 @@ class PdfMergerApp(tk.Tk):
         ttk.Button(toolbar, text="Next", command=lambda: self._change_page(1)).pack(side=tk.RIGHT, padx=(6, 0))
         ttk.Button(toolbar, text="Previous", command=lambda: self._change_page(-1)).pack(side=tk.RIGHT)
         columns = ("name", "created", "size", "path")
-        self.tree = ttk.Treeview(list_frame, columns=columns, show="headings")
+        self.tree = ttk.Treeview(list_frame, columns=columns, show="headings", height=4)
         self.tree.heading("name", text="Name")
         self.tree.heading("created", text="Created")
         self.tree.heading("size", text="Size")
@@ -199,13 +205,9 @@ class PdfMergerApp(tk.Tk):
         self.tree.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
         scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
 
-        log_frame = ttk.LabelFrame(root, text="Activity", padding=10, style="Card.TLabelframe")
-        log_frame.pack(fill=tk.X, pady=(0, 12))
-        self.log_box = tk.Text(log_frame, height=4, wrap=tk.WORD)
-        self.log_box.pack(fill=tk.X)
-
         bottom = ttk.Frame(root)
-        bottom.pack(fill=tk.X)
+        bottom.pack(fill=tk.X, side=tk.BOTTOM)
+        ttk.Button(bottom, text="Activity log", command=self._open_activity, style="Quiet.TButton").pack(side=tk.RIGHT, padx=(8, 0))
         ttk.Button(bottom, text="Open output folder", command=self._open_output_folder, style="Quiet.TButton").pack(side=tk.RIGHT, padx=(8, 0))
         self.start_button = ttk.Button(bottom, text="Start merge", command=self._merge, style="Accent.TButton")
         self.start_button.pack(side=tk.RIGHT)
@@ -214,7 +216,9 @@ class PdfMergerApp(tk.Tk):
         self.pause_button = ttk.Button(bottom, text="Pause", command=self._toggle_pause, state=tk.DISABLED)
         self.pause_button.pack(side=tk.RIGHT)
         ttk.Progressbar(bottom, variable=self.progress_var, maximum=100, style="Accent.Horizontal.TProgressbar").pack(side=tk.LEFT, fill=tk.X, expand=True, padx=(0, 12))
-        ttk.Label(root, textvariable=self.status_var, foreground="#52657d").pack(fill=tk.X, pady=(10, 0))
+        ttk.Label(root, textvariable=self.status_var, foreground="#52657d").pack(fill=tk.X, side=tk.BOTTOM, pady=(8, 0))
+        list_frame.pack(fill=tk.BOTH, expand=True, pady=(8, 8))
+        self._update_mode_controls()
 
     def _browse_folder(self) -> None:
         folder = filedialog.askdirectory(title="Choose folder containing PDFs")
@@ -241,7 +245,22 @@ class PdfMergerApp(tk.Tk):
         path = filedialog.askopenfilename(title="Optional cover PDF", filetypes=[("PDF files", "*.pdf")])
         if path:
             self.cover_var.set(path)
+            self._update_cover_status()
             self._log(f"Cover PDF selected: {Path(path).name}")
+
+    def _update_mode_controls(self) -> None:
+        if self.mode_var.get() == "chunks":
+            self.chunk_label.grid()
+            self.chunk_input.grid()
+            self.resume_check.grid()
+        else:
+            self.chunk_label.grid_remove()
+            self.chunk_input.grid_remove()
+            self.resume_check.grid_remove()
+
+    def _update_cover_status(self) -> None:
+        cover = self.cover_var.get().strip()
+        self.cover_status.configure(text=f"Cover PDF: {Path(cover).name}" if cover else "No cover PDF selected")
 
     def _scan(self) -> None:
         folder = self.folder_var.get().strip()
@@ -552,8 +571,31 @@ class PdfMergerApp(tk.Tk):
         return (len(self.files) + chunk_size - 1) // chunk_size
 
     def _log(self, message: str) -> None:
-        self.log_box.insert(tk.END, f"{message}\n")
-        self.log_box.see(tk.END)
+        self.log_messages.append(message)
+        if self.log_box and self.log_box.winfo_exists():
+            self.log_box.insert(tk.END, f"{message}\n")
+            self.log_box.see(tk.END)
+
+    def _open_activity(self) -> None:
+        if self.log_window and self.log_window.winfo_exists():
+            self.log_window.deiconify()
+            self.log_window.lift()
+            return
+        window = tk.Toplevel(self)
+        window.title("OpenMerger activity")
+        window.geometry("760x340")
+        window.minsize(480, 220)
+        frame = ttk.Frame(window, padding=12, style="App.TFrame")
+        frame.pack(fill=tk.BOTH, expand=True)
+        text_box = tk.Text(frame, wrap=tk.WORD, background="#ffffff", foreground="#172033", relief=tk.FLAT)
+        text_box.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+        scrollbar = ttk.Scrollbar(frame, orient=tk.VERTICAL, command=text_box.yview)
+        scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
+        text_box.configure(yscrollcommand=scrollbar.set)
+        text_box.insert(tk.END, "\n".join(self.log_messages) + ("\n" if self.log_messages else "No activity yet.\n"))
+        text_box.see(tk.END)
+        self.log_window = window
+        self.log_box = text_box
 
     def _settings_payload(self) -> dict[str, object]:
         return {
@@ -596,6 +638,8 @@ class PdfMergerApp(tk.Tk):
         for key, variable in int_vars.items():
             if key in preset:
                 variable.set(int(preset[key]))
+        self._update_mode_controls()
+        self._update_cover_status()
         self._log("Preset loaded.")
 
     def _record_recent_job(self, outputs: list[Path]) -> None:
