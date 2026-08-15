@@ -2,6 +2,10 @@
 
 OpenMerger is a lightweight Windows PDF merger for very large folders. It scans a folder automatically, sorts PDFs by filename numbers, natural filename order, created timestamp, or modified timestamp, then creates either one merged PDF or many chunked PDFs such as 50 PDFs per merged file.
 
+## Privacy
+
+OpenMerger processes PDFs locally on your computer. It does not upload PDFs, filenames, passwords, or merge reports to any online service. Per-job passwords are used only while the current merge runs and are never stored in presets or job manifests.
+
 ## Features
 
 - Scans all `.pdf` files from a folder, with optional subfolder scanning.
