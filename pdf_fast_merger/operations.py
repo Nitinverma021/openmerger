@@ -3,8 +3,13 @@
 from __future__ import annotations
 
 import argparse
+import csv
+import hashlib
 import json
 import os
+import shutil
+import subprocess
+import tempfile
 from collections.abc import Iterable
 from pathlib import Path
 from typing import Literal
@@ -72,6 +77,14 @@ def image_metadata_report(image_path: Path) -> str:
     return json.dumps(read_image_metadata(image_path), indent=2, ensure_ascii=False)
 
 
+def image_metadata_reports(image_paths: Iterable[Path]) -> str:
+    """Return one JSON document describing every selected image."""
+    reports = [read_image_metadata(path) for path in image_paths]
+    if not reports:
+        raise ValueError("Choose at least one image.")
+    return json.dumps({"images": reports}, indent=2, ensure_ascii=False)
+
+
 def remove_image_metadata(source_path: Path, output_path: Path) -> None:
     """Create a visually equivalent image copy without EXIF/XMP/private metadata."""
     from PIL import Image
@@ -97,6 +110,272 @@ def remove_image_metadata(source_path: Path, output_path: Path) -> None:
             os.replace(partial, output_path)
         finally:
             clean.close()
+
+
+def add_page_numbers(source_path: Path, output_path: Path, position: str = "bottom-center", password: str | None = None) -> None:
+    """Create a numbered PDF copy using a subtle footer on each page."""
+    import pikepdf
+
+    _ensure_new_output(source_path, output_path)
+    with pikepdf.Pdf.open(source_path, password=password or "") as document:
+        for number, page in enumerate(document.pages, 1):
+            _add_text_overlay(page, f"Page {number} of {len(document.pages)}", position, 10, opacity=0.65)
+        partial = output_path.with_suffix(output_path.suffix + ".partial")
+        document.save(partial)
+        partial.replace(output_path)
+
+
+def add_text_watermark(source_path: Path, output_path: Path, text: str, password: str | None = None) -> None:
+    """Add a centered translucent text watermark to every page."""
+    import pikepdf
+
+    if not text.strip():
+        raise ValueError("Enter watermark text.")
+    _ensure_new_output(source_path, output_path)
+    with pikepdf.Pdf.open(source_path, password=password or "") as document:
+        for page in document.pages:
+            _add_text_overlay(page, text.strip(), "center", 28, opacity=0.22)
+        partial = output_path.with_suffix(output_path.suffix + ".partial")
+        document.save(partial)
+        partial.replace(output_path)
+
+
+def create_cover_page(output_path: Path, title: str, subtitle: str = "", page_size: tuple[int, int] = (595, 842)) -> None:
+    """Create a clean, editable-text PDF cover page."""
+    import pikepdf
+    from pikepdf.canvas import BLUE, Canvas, Helvetica, Text
+
+    if not title.strip():
+        raise ValueError("Enter a cover-page title.")
+    canvas = Canvas(page_size=page_size)
+    canvas.add_font(pikepdf.Name("/F1"), Helvetica())
+    width, height = page_size
+    canvas.do.fill_color(BLUE)
+    canvas.do.rect(0, height - 120, width, 120, fill=True)
+    heading = Text().font(pikepdf.Name("/F1"), 30).move_cursor(54, height - 210).show(title.strip())
+    canvas.do.draw_text(heading)
+    if subtitle.strip():
+        detail = Text().font(pikepdf.Name("/F1"), 15).move_cursor(56, height - 250).show(subtitle.strip())
+        canvas.do.draw_text(detail)
+    document = canvas.to_pdf()
+    try:
+        partial = output_path.with_suffix(output_path.suffix + ".partial")
+        document.save(partial)
+        partial.replace(output_path)
+    finally:
+        document.close()
+
+
+def _add_text_overlay(page: object, text_value: str, position: str, size: int, opacity: float) -> None:
+    import pikepdf
+    from pikepdf.canvas import Canvas, Helvetica, Text
+
+    media_box = page.mediabox
+    width, height = float(media_box[2]), float(media_box[3])
+    locations = {
+        "bottom-center": (width * 0.42, 24),
+        "bottom-right": (max(24, width - 110), 24),
+        "top-right": (max(24, width - 110), height - 30),
+        "center": (max(40, width * 0.28), height * 0.5),
+    }
+    x, y = locations.get(position, locations["bottom-center"])
+    canvas = Canvas(page_size=(width, height))
+    canvas.add_font(pikepdf.Name("/F1"), Helvetica())
+    canvas.do.push()
+    canvas.do.fill_color(pikepdf.canvas.Color(0.12, 0.23, 0.42, alpha=opacity))
+    text = Text().font(pikepdf.Name("/F1"), size).move_cursor(x, y).show(text_value)
+    canvas.do.draw_text(text)
+    canvas.do.pop()
+    overlay = canvas.to_pdf()
+    try:
+        page.add_overlay(overlay.pages[0])
+    finally:
+        overlay.close()
+
+
+def pdf_to_images(source_path: Path, output_folder: Path, image_format: Literal["png", "jpg"] = "png", dpi: int = 150, password: str | None = None) -> list[Path]:
+    """Render every PDF page to an image file."""
+    import pymupdf
+
+    if image_format not in {"png", "jpg"}:
+        raise ValueError("Image format must be PNG or JPG.")
+    if dpi not in {150, 300}:
+        raise ValueError("DPI must be 150 or 300.")
+    output_folder.mkdir(parents=True, exist_ok=True)
+    document = pymupdf.open(source_path)
+    if document.needs_pass:
+        if not password or not document.authenticate(password):
+            document.close()
+            raise ValueError("A valid PDF password is required.")
+    try:
+        zoom = dpi / 72
+        matrix = pymupdf.Matrix(zoom, zoom)
+        output_paths: list[Path] = []
+        for index, page in enumerate(document, 1):
+            pixmap = page.get_pixmap(matrix=matrix, alpha=False)
+            target = output_folder / f"{source_path.stem}_page_{index:04d}.{image_format}"
+            pixmap.save(target)
+            output_paths.append(target)
+        return output_paths
+    finally:
+        document.close()
+
+
+def find_blank_pages(source_path: Path, threshold: float = 0.0001, password: str | None = None) -> list[int]:
+    """Return 1-based page numbers whose low-resolution render is almost entirely white."""
+    import pymupdf
+
+    document = pymupdf.open(source_path)
+    if document.needs_pass and (not password or not document.authenticate(password)):
+        document.close()
+        raise ValueError("A valid PDF password is required.")
+    try:
+        blanks: list[int] = []
+        for index, page in enumerate(document, 1):
+            pixmap = page.get_pixmap(matrix=pymupdf.Matrix(0.5, 0.5), colorspace=pymupdf.csGRAY, alpha=False)
+            dark_pixels = sum(value < 245 for value in pixmap.samples)
+            if dark_pixels / max(1, len(pixmap.samples)) <= threshold:
+                blanks.append(index)
+        return blanks
+    finally:
+        document.close()
+
+
+def remove_blank_pages(source_path: Path, output_path: Path, threshold: float = 0.0001, password: str | None = None) -> list[int]:
+    """Create a PDF copy with near-blank pages removed and return removed page numbers."""
+    import pymupdf
+
+    _ensure_new_output(source_path, output_path)
+    blanks = find_blank_pages(source_path, threshold, password)
+    document = pymupdf.open(source_path)
+    if document.needs_pass:
+        document.authenticate(password or "")
+    try:
+        if len(blanks) == document.page_count:
+            raise ValueError("Every page appears blank; no output was created.")
+        for page_number in reversed(blanks):
+            document.delete_page(page_number - 1)
+        document.save(output_path)
+        return blanks
+    finally:
+        document.close()
+
+
+def find_duplicate_pages(source_path: Path, password: str | None = None) -> list[list[int]]:
+    """Find visually identical pages by hashing a consistent low-resolution rendering."""
+    import pymupdf
+
+    document = pymupdf.open(source_path)
+    if document.needs_pass and (not password or not document.authenticate(password)):
+        document.close()
+        raise ValueError("A valid PDF password is required.")
+    try:
+        grouped: dict[str, list[int]] = {}
+        for index, page in enumerate(document, 1):
+            pixmap = page.get_pixmap(matrix=pymupdf.Matrix(0.5, 0.5), colorspace=pymupdf.csGRAY, alpha=False)
+            grouped.setdefault(hashlib.sha256(pixmap.samples).hexdigest(), []).append(index)
+        return [pages for pages in grouped.values() if len(pages) > 1]
+    finally:
+        document.close()
+
+
+def pdf_to_docx(source_path: Path, output_path: Path, password: str | None = None) -> int:
+    """Extract text into DOCX; scanned PDFs require OCR first."""
+    import pymupdf
+    from docx import Document
+
+    _ensure_new_output(source_path, output_path)
+    pdf = pymupdf.open(source_path)
+    if pdf.needs_pass and (not password or not pdf.authenticate(password)):
+        pdf.close()
+        raise ValueError("A valid PDF password is required.")
+    try:
+        document = Document()
+        count = 0
+        for page in pdf:
+            text = page.get_text().strip()
+            if text:
+                document.add_paragraph(text)
+                count += 1
+        if not count:
+            raise ValueError("No selectable text found. Run OCR before converting this scanned PDF.")
+        document.save(output_path)
+        return count
+    finally:
+        pdf.close()
+
+
+def pdf_to_pptx(source_path: Path, output_path: Path, dpi: int = 150, password: str | None = None) -> int:
+    import pymupdf
+    from pptx import Presentation
+
+    _ensure_new_output(source_path, output_path)
+    pdf = pymupdf.open(source_path)
+    if pdf.needs_pass and (not password or not pdf.authenticate(password)):
+        pdf.close()
+        raise ValueError("A valid PDF password is required.")
+    try:
+        presentation = Presentation()
+        presentation.slide_width = 13_333_200
+        presentation.slide_height = 7_500_000
+        with tempfile.TemporaryDirectory() as temp:
+            for index, page in enumerate(pdf):
+                pix = page.get_pixmap(matrix=pymupdf.Matrix(dpi / 72, dpi / 72), alpha=False)
+                image = Path(temp) / f"page-{index}.png"
+                pix.save(image)
+                slide = presentation.slides.add_slide(presentation.slide_layouts[6])
+                slide.shapes.add_picture(str(image), 0, 0, width=presentation.slide_width, height=presentation.slide_height)
+        presentation.save(output_path)
+        return pdf.page_count
+    finally:
+        pdf.close()
+
+
+def excel_to_csv(source_path: Path, output_path: Path, sheet_name: str | None = None) -> int:
+    from openpyxl import load_workbook
+
+    _ensure_new_output(source_path, output_path)
+    workbook = load_workbook(source_path, data_only=True, read_only=True)
+    try:
+        sheet = workbook[sheet_name] if sheet_name else workbook.active
+        count = 0
+        with output_path.open("w", newline="", encoding="utf-8-sig") as handle:
+            writer = csv.writer(handle)
+            for row in sheet.iter_rows(values_only=True):
+                writer.writerow(row)
+                count += 1
+        return count
+    finally:
+        workbook.close()
+
+
+def csv_to_excel(source_path: Path, output_path: Path) -> int:
+    from openpyxl import Workbook
+
+    _ensure_new_output(source_path, output_path)
+    workbook = Workbook()
+    sheet = workbook.active
+    count = 0
+    with source_path.open(newline="", encoding="utf-8-sig") as handle:
+        for row in csv.reader(handle):
+            sheet.append(row)
+            count += 1
+    workbook.save(output_path)
+    return count
+
+
+def office_to_pdf(source_path: Path, output_path: Path) -> None:
+    """Convert DOCX/PPTX using an installed LibreOffice; Word/PowerPoint can be added later."""
+    _ensure_new_output(source_path, output_path)
+    office = shutil.which("soffice") or shutil.which("libreoffice")
+    if not office:
+        raise ValueError("DOCX/PPTX to PDF needs LibreOffice installed and available as 'soffice'.")
+    with tempfile.TemporaryDirectory() as temp:
+        result = subprocess.run([office, "--headless", "--convert-to", "pdf", "--outdir", temp, str(source_path)], capture_output=True, text=True, check=False)
+        created = Path(temp) / f"{source_path.stem}.pdf"
+        if result.returncode or not created.exists():
+            raise ValueError(result.stderr or "Office conversion failed.")
+        shutil.move(created, output_path)
 
 
 def parse_page_ranges(specification: str, page_count: int) -> list[int]:

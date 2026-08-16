@@ -5,9 +5,17 @@ from PIL import Image
 
 from pdf_fast_merger.core import PdfInfo, merge_collection, merge_paths, natural_key, sort_pdfs
 from pdf_fast_merger.operations import (
+    add_page_numbers,
+    add_text_watermark,
+    create_cover_page,
+    find_blank_pages,
+    find_duplicate_pages,
     image_metadata_report,
+    image_metadata_reports,
     images_to_pdf,
+    pdf_to_images,
     protect_pdf,
+    remove_blank_pages,
     remove_image_metadata,
     unlock_pdf,
     update_metadata,
@@ -100,3 +108,42 @@ def test_image_metadata_report_and_removal(tmp_path: Path) -> None:
     cleaned = tmp_path / "clean.jpg"
     remove_image_metadata(source, cleaned)
     assert "Private test description" not in image_metadata_report(cleaned)
+    second = tmp_path / "second.png"
+    image = Image.new("RGB", (10, 10), "red")
+    image.save(second)
+    image.close()
+    report = image_metadata_reports([source, second])
+    assert report.count('"File"') == 2
+
+
+def test_document_finishing_tools(tmp_path: Path) -> None:
+    source = tmp_path / "source.pdf"
+    document = pikepdf.Pdf.new()
+    document.add_blank_page(page_size=(595, 842))
+    document.add_blank_page(page_size=(595, 842))
+    document.save(source)
+    add_page_numbers(source, tmp_path / "numbered.pdf")
+    add_text_watermark(source, tmp_path / "watermarked.pdf", "CONFIDENTIAL")
+    create_cover_page(tmp_path / "cover.pdf", "Project report", "August 2026")
+    for name, pages in (("numbered.pdf", 2), ("watermarked.pdf", 2), ("cover.pdf", 1)):
+        with pikepdf.Pdf.open(tmp_path / name) as result:
+            assert len(result.pages) == pages
+
+
+def test_page_rendering_and_cleanup_tools(tmp_path: Path) -> None:
+    import pymupdf
+
+    source = tmp_path / "source.pdf"
+    document = pymupdf.open()
+    document.new_page()
+    for _ in range(2):
+        page = document.new_page()
+        page.insert_text((72, 72), "same page")
+    document.save(source)
+    document.close()
+    assert find_blank_pages(source) == [1]
+    assert find_duplicate_pages(source) == [[2, 3]]
+    assert len(pdf_to_images(source, tmp_path / "images")) == 3
+    assert remove_blank_pages(source, tmp_path / "clean.pdf") == [1]
+    with pymupdf.open(tmp_path / "clean.pdf") as cleaned:
+        assert cleaned.page_count == 2

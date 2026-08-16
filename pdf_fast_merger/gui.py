@@ -12,9 +12,20 @@ from tkinter import filedialog, messagebox, ttk
 
 from .core import MergeResult, PdfInfo, format_size, ghostscript_available, merge_collection, scan_folder
 from .operations import (
-    image_metadata_report,
+    add_page_numbers,
+    add_text_watermark,
+    create_cover_page,
+    csv_to_excel,
+    excel_to_csv,
+    find_duplicate_pages,
+    image_metadata_reports,
     images_to_pdf,
+    office_to_pdf,
+    pdf_to_docx,
+    pdf_to_images,
+    pdf_to_pptx,
     protect_pdf,
+    remove_blank_pages,
     remove_image_metadata,
     split_pdf,
     transform_pdf,
@@ -38,6 +49,14 @@ COMPRESSION_LABELS = {
     "Best quality compression": "lossless",
     "Strong compression (may reduce quality)": "strong",
     "No compression": "none",
+}
+
+TOOL_OUTPUT_SPECS = {
+    "PDF to DOCX": (".docx", "Word documents", "*.docx"),
+    "Excel to CSV": (".csv", "CSV files", "*.csv"),
+    "CSV to Excel": (".xlsx", "Excel workbooks", "*.xlsx"),
+    "PDF to PPTX": (".pptx", "PowerPoint files", "*.pptx"),
+    "Remove image metadata": (".png", "PNG image", "*.png"),
 }
 
 
@@ -87,11 +106,16 @@ class PdfMergerApp(tk.Tk):
         self._merge_thread: threading.Thread | None = None
         self._stop_event = threading.Event()
         self._pause_event = threading.Event()
+        self._drag_item: str | None = None
 
         self._configure_style()
         self._build()
         self.folder_var.trace_add("write", self._queue_auto_scan)
         self.search_var.trace_add("write", self._queue_refresh)
+        self.bind("<Control-o>", lambda _event: self._browse_folder())
+        self.bind("<Control-Return>", lambda _event: self._merge())
+        self.bind("<Delete>", lambda _event: self._remove_selected())
+        self.bind("<Control-f>", self._focus_search)
         self.after(150, self._drain_events)
 
     def _configure_style(self) -> None:
@@ -192,7 +216,8 @@ class PdfMergerApp(tk.Tk):
         toolbar = ttk.Frame(list_frame)
         toolbar.pack(fill=tk.X, pady=(0, 8))
         ttk.Label(toolbar, text="Search").pack(side=tk.LEFT)
-        ttk.Entry(toolbar, textvariable=self.search_var, width=28).pack(side=tk.LEFT, padx=(6, 12))
+        self.search_entry = ttk.Entry(toolbar, textvariable=self.search_var, width=28)
+        self.search_entry.pack(side=tk.LEFT, padx=(6, 12))
         ttk.Button(toolbar, text="Move up", command=lambda: self._move_selected(-1), style="Quiet.TButton").pack(side=tk.LEFT, padx=(0, 6))
         ttk.Button(toolbar, text="Move down", command=lambda: self._move_selected(1), style="Quiet.TButton").pack(side=tk.LEFT, padx=(0, 6))
         ttk.Button(toolbar, text="Remove", command=self._remove_selected, style="Quiet.TButton").pack(side=tk.LEFT, padx=(0, 6))
@@ -214,6 +239,8 @@ class PdfMergerApp(tk.Tk):
         self.tree.column("path", width=420)
         scrollbar = ttk.Scrollbar(list_frame, orient=tk.VERTICAL, command=self.tree.yview)
         self.tree.configure(yscrollcommand=scrollbar.set)
+        self.tree.bind("<ButtonPress-1>", self._start_row_drag)
+        self.tree.bind("<ButtonRelease-1>", self._finish_row_drag)
         self.tree.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
         scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
 
@@ -276,6 +303,18 @@ class PdfMergerApp(tk.Tk):
             "Edit metadata",
             "Inspect image metadata",
             "Remove image metadata",
+            "Add page numbers",
+            "Add text watermark",
+            "Create cover page",
+            "Export PDF pages to PNG",
+            "Remove blank pages",
+            "Find duplicate pages",
+            "PDF to DOCX",
+            "DOCX to PDF",
+            "Excel to CSV",
+            "CSV to Excel",
+            "PDF to PPTX",
+            "PPTX to PDF",
         ]
         ttk.Label(frame, text="Task").grid(row=2, column=0, sticky=tk.W)
         task_box = ttk.Combobox(frame, textvariable=operation, values=labels, state="readonly", width=28)
@@ -286,22 +325,18 @@ class PdfMergerApp(tk.Tk):
 
         def choose_source() -> None:
             if operation.get() in {"Images to PDF", "Inspect image metadata", "Remove image metadata"}:
-                if operation.get() == "Images to PDF":
+                if operation.get() in {"Images to PDF", "Inspect image metadata"}:
                     selected = filedialog.askopenfilenames(
                         parent=window,
-                        title="Choose images",
+                        title="Choose images" if operation.get() == "Images to PDF" else "Choose images to inspect",
                         filetypes=[("Image files", "*.png *.jpg *.jpeg *.bmp *.tif *.tiff *.webp")],
                     )
                     if selected:
                         source.set("|".join(selected))
                     return
-                selected = filedialog.askopenfilenames(
-                    parent=window,
-                    title="Choose an image",
-                    filetypes=[("Image files", "*.png *.jpg *.jpeg *.bmp *.tif *.tiff *.webp")],
-                )
+                selected = filedialog.askopenfilename(parent=window, title="Choose an image", filetypes=[("Image files", "*.png *.jpg *.jpeg *.bmp *.tif *.tiff *.webp")])
                 if selected:
-                    source.set(selected[0])
+                    source.set(selected)
             else:
                 selected = filedialog.askopenfilename(parent=window, title="Choose PDF", filetypes=[("PDF files", "*.pdf")])
                 if selected:
@@ -323,11 +358,11 @@ class PdfMergerApp(tk.Tk):
         ttk.Entry(frame, textvariable=password, show="•", width=26).grid(row=7, column=1, sticky=tk.W, padx=8, pady=(10, 0))
         ttk.Label(frame, text="Owner password").grid(row=7, column=2, sticky=tk.E, pady=(10, 0))
         ttk.Entry(frame, textvariable=owner_password, show="•", width=18).grid(row=7, column=3, sticky=tk.W, pady=(10, 0))
-        ttk.Label(frame, text="Title").grid(row=8, column=0, sticky=tk.W, pady=(10, 0))
+        ttk.Label(frame, text="Title / watermark").grid(row=8, column=0, sticky=tk.W, pady=(10, 0))
         ttk.Entry(frame, textvariable=title).grid(row=8, column=1, sticky=tk.EW, padx=8, pady=(10, 0))
         ttk.Label(frame, text="Author").grid(row=8, column=2, sticky=tk.E, pady=(10, 0))
         ttk.Entry(frame, textvariable=author, width=18).grid(row=8, column=3, sticky=tk.W, pady=(10, 0))
-        ttk.Label(frame, text="Subject").grid(row=9, column=0, sticky=tk.W, pady=(10, 0))
+        ttk.Label(frame, text="Subject / cover subtitle").grid(row=9, column=0, sticky=tk.W, pady=(10, 0))
         ttk.Entry(frame, textvariable=subject).grid(row=9, column=1, columnspan=3, sticky=tk.EW, padx=8, pady=(10, 0))
         ttk.Label(frame, text="Image layout").grid(row=10, column=0, sticky=tk.W, pady=(10, 0))
         ttk.Combobox(frame, textvariable=image_preset, values=("Original size", "Print A4", "US Letter", "Poster", "Social portrait", "Wide banner"), state="readonly", width=18).grid(row=10, column=1, sticky=tk.W, padx=8, pady=(10, 0))
@@ -348,8 +383,23 @@ class PdfMergerApp(tk.Tk):
                 "Edit metadata": "Create a copy with a title, author, and subject.",
                 "Inspect image metadata": "Show image dimensions, camera/EXIF, GPS, copyright, and other embedded details locally.",
                 "Remove image metadata": "Create an image copy without EXIF, GPS, XMP, and other embedded metadata.",
+                "Add page numbers": "Add a subtle page number footer to every page in a new PDF.",
+                "Add text watermark": "Add centered watermark text to every page in a new PDF.",
+                "Create cover page": "Create a new PDF cover page from the Title and Subject fields.",
+                "Export PDF pages to PNG": "Render every PDF page as a high-quality PNG image in the output folder.",
+                "Remove blank pages": "Detect near-empty white pages and create a cleaned PDF copy without them.",
+                "Find duplicate pages": "Find visually identical pages by comparing local low-resolution renderings.",
+                "PDF to DOCX": "Extract selectable PDF text into an editable Word document; scanned PDFs need OCR first.",
+                "DOCX to PDF": "Convert Word files using installed LibreOffice.",
+                "Excel to CSV": "Export the active Excel worksheet to a UTF-8 CSV file.",
+                "CSV to Excel": "Create an XLSX workbook from a CSV file.",
+                "PDF to PPTX": "Create a PowerPoint with one rendered PDF page per slide.",
+                "PPTX to PDF": "Convert PowerPoint files using installed LibreOffice.",
             }
             description.set(messages[operation.get()])
+            if Path(output.get()).name.startswith("output."):
+                extension = TOOL_OUTPUT_SPECS.get(operation.get(), (".pdf", "PDF files", "*.pdf"))[0]
+                output.set(str(Path.home() / "Desktop" / f"output{extension}"))
 
         task_box.bind("<<ComboboxSelected>>", update_help)
 
@@ -360,7 +410,9 @@ class PdfMergerApp(tk.Tk):
                 "title": title.get(), "author": author.get(), "subject": subject.get(), "image_preset": image_preset.get(),
                 "image_fit": image_fit.get(), "image_margin": image_margin.get(), "image_dpi": image_dpi.get(),
             }
-            if not values["source"] or (values["operation"] != "Inspect image metadata" and not values["output"]):
+            needs_source = values["operation"] not in {"Inspect image metadata", "Create cover page"}
+            needs_output = values["operation"] not in {"Inspect image metadata", "Find duplicate pages"}
+            if (needs_source and not values["source"]) or (needs_output and not values["output"]):
                 messagebox.showwarning("PDF toolbox", "Choose an input and, when required, an output file first.")
                 return
             threading.Thread(target=self._tool_worker, args=(values,), daemon=True).start()
@@ -375,6 +427,9 @@ class PdfMergerApp(tk.Tk):
     def _choose_tool_output(self, variable: tk.StringVar, parent: tk.Misc | None = None, operation: str = "") -> None:
         if operation == "Remove image metadata":
             path = filedialog.asksaveasfilename(parent=parent, title="Save metadata-free image as", defaultextension=".png", filetypes=[("PNG image", "*.png"), ("JPEG image", "*.jpg"), ("WebP image", "*.webp"), ("TIFF image", "*.tiff")])
+        elif operation in TOOL_OUTPUT_SPECS:
+            extension, label, pattern = TOOL_OUTPUT_SPECS[operation]
+            path = filedialog.asksaveasfilename(parent=parent, title=f"Save {label} as", defaultextension=extension, filetypes=[(label, pattern)])
         else:
             path = filedialog.asksaveasfilename(parent=parent, title="Save PDF as", defaultextension=".pdf", filetypes=[("PDF files", "*.pdf")])
         if path:
@@ -386,6 +441,16 @@ class PdfMergerApp(tk.Tk):
         window.geometry("720x520")
         frame = ttk.Frame(window, padding=12, style="App.TFrame")
         frame.pack(fill=tk.BOTH, expand=True)
+        ttk.Label(frame, text="Image metadata report", font=("Segoe UI Semibold", 14)).pack(anchor=tk.W)
+        ttk.Label(frame, text="One JSON report for every selected image. Review GPS or camera details before sharing.", foreground="#52657d").pack(anchor=tk.W, pady=(2, 8))
+
+        def save_json() -> None:
+            path = filedialog.asksaveasfilename(parent=window, title="Save metadata report", defaultextension=".json", initialfile="image_metadata.json", filetypes=[("JSON files", "*.json")])
+            if path:
+                Path(path).write_text(report, encoding="utf-8")
+                self._log(f"Saved image metadata report: {path}")
+
+        ttk.Button(frame, text="Save JSON", command=save_json, style="Accent.TButton").pack(anchor=tk.E, pady=(0, 8))
         text_box = tk.Text(frame, wrap=tk.WORD, background="#ffffff", foreground="#172033", relief=tk.FLAT)
         text_box.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
         scroll = ttk.Scrollbar(frame, orient=tk.VERTICAL, command=text_box.yview)
@@ -412,11 +477,15 @@ class PdfMergerApp(tk.Tk):
                 )
                 message = f"Created {output.name} from {count} image(s)."
             elif operation == "Inspect image metadata":
-                self.events.put(("metadata_report", image_metadata_report(Path(str(values["source"])).expanduser().resolve())))
+                paths = [Path(path).expanduser().resolve() for path in str(values["source"]).split("|")]
+                self.events.put(("metadata_report", image_metadata_reports(paths)))
                 return
             elif operation == "Remove image metadata":
                 remove_image_metadata(Path(str(values["source"])).expanduser().resolve(), output)
                 message = f"Created metadata-free image: {output.name}."
+            elif operation == "Create cover page":
+                create_cover_page(output, str(values["title"]), str(values["subject"]))
+                message = f"Created cover page: {output.name}."
             else:
                 source = Path(str(values["source"])).expanduser().resolve()
                 if operation == "Extract / rotate pages":
@@ -431,6 +500,32 @@ class PdfMergerApp(tk.Tk):
                 elif operation == "Unlock PDF":
                     unlock_pdf(source, output, str(values["password"]))
                     message = f"Created unlocked PDF: {output.name}."
+                elif operation == "Add page numbers":
+                    add_page_numbers(source, output, password=password)
+                    message = f"Created numbered PDF: {output.name}."
+                elif operation == "Add text watermark":
+                    add_text_watermark(source, output, str(values["title"]), password=password)
+                    message = f"Created watermarked PDF: {output.name}."
+                elif operation == "Export PDF pages to PNG":
+                    images = pdf_to_images(source, output.parent, "png", int(values["image_dpi"]), password)
+                    message = f"Exported {len(images)} page image(s) to {output.parent}."
+                elif operation == "Remove blank pages":
+                    removed = remove_blank_pages(source, output, password=password)
+                    message = f"Created cleaned PDF; removed {len(removed)} blank page(s): {removed or 'none'}."
+                elif operation == "Find duplicate pages":
+                    groups = find_duplicate_pages(source, password)
+                    message = f"Duplicate page groups: {groups}" if groups else "No visually identical pages found."
+                elif operation == "PDF to DOCX":
+                    message = f"Created DOCX with text from {pdf_to_docx(source, output, password)} page(s)."
+                elif operation == "PDF to PPTX":
+                    message = f"Created PPTX with {pdf_to_pptx(source, output, password=password)} slide(s)."
+                elif operation == "Excel to CSV":
+                    message = f"Created CSV with {excel_to_csv(source, output)} row(s)."
+                elif operation == "CSV to Excel":
+                    message = f"Created Excel workbook with {csv_to_excel(source, output)} row(s)."
+                elif operation in {"DOCX to PDF", "PPTX to PDF"}:
+                    office_to_pdf(source, output)
+                    message = f"Created PDF: {output.name}."
                 else:
                     update_metadata(source, output, str(values["title"]), str(values["author"]), str(values["subject"]), password)
                     message = f"Updated metadata in {output.name}."
@@ -684,6 +779,33 @@ class PdfMergerApp(tk.Tk):
         if self._refresh_after:
             self.after_cancel(self._refresh_after)
         self._refresh_after = self.after(200, self._refresh_tree)
+
+    def _focus_search(self, _event: object | None = None) -> str:
+        self.search_entry.focus_set()
+        self.search_entry.selection_range(0, tk.END)
+        return "break"
+
+    def _start_row_drag(self, event: tk.Event[tk.Misc]) -> None:
+        row = self.tree.identify_row(event.y)
+        self._drag_item = row or None
+
+    def _finish_row_drag(self, event: tk.Event[tk.Misc]) -> None:
+        source_id = self._drag_item
+        self._drag_item = None
+        target_id = self.tree.identify_row(event.y)
+        if not source_id or not target_id or source_id == target_id:
+            return
+        try:
+            source_index = self.visible_indexes[int(source_id)]
+            target_index = self.visible_indexes[int(target_id)]
+        except (IndexError, ValueError):
+            return
+        item = self.files.pop(source_index)
+        if source_index < target_index:
+            target_index -= 1
+        self.files.insert(target_index, item)
+        self._refresh_tree()
+        self._log("Manual order updated by drag and drop.")
 
     def _change_page(self, direction: int) -> None:
         self.page_index = max(0, self.page_index + direction)
