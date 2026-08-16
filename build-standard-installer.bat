@@ -6,6 +6,7 @@ call build-windows.bat --non-interactive
 if errorlevel 1 exit /b 1
 
 if exist "dist\OpenMerger\engine" rmdir /s /q "dist\OpenMerger\engine"
+> "dist\OpenMerger\edition.json" echo {"edition":"standard"}
 
 set "ISCC=ISCC.exe"
 where ISCC.exe >nul 2>nul

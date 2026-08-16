@@ -5,6 +5,7 @@ import json
 import os
 import queue
 import shutil
+import sys
 import threading
 import tkinter as tk
 from pathlib import Path
@@ -58,6 +59,17 @@ TOOL_OUTPUT_SPECS = {
     "PDF to PPTX": (".pptx", "PowerPoint files", "*.pptx"),
     "Remove image metadata": (".png", "PNG image", "*.png"),
 }
+
+
+def is_standard_edition() -> bool:
+    """Return whether this packaged app is the smaller, no-office-engine edition."""
+    if not getattr(sys, "frozen", False):
+        return False
+    try:
+        edition = json.loads((Path(sys.executable).resolve().parent / "edition.json").read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return False
+    return edition.get("edition") == "standard"
 
 
 class PdfMergerApp(tk.Tk):
@@ -320,6 +332,8 @@ class PdfMergerApp(tk.Tk):
             "PDF to PPTX",
             "PPTX to PDF",
         ]
+        if is_standard_edition():
+            labels = [name for name in labels if name not in {"DOCX to PDF", "PPTX to PDF"}]
         ttk.Label(frame, text="Task").grid(row=2, column=0, sticky=tk.W)
         task_box = ttk.Combobox(frame, textvariable=operation, values=labels, state="readonly", width=28)
         task_box.grid(row=2, column=1, sticky=tk.W, padx=(8, 0))

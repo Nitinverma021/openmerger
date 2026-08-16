@@ -14,6 +14,7 @@ if errorlevel 1 exit /b 1
 if exist "dist\OpenMerger\engine\LibreOffice" rmdir /s /q "dist\OpenMerger\engine\LibreOffice"
 mkdir "dist\OpenMerger\engine"
 xcopy /e /i /y "third_party\LibreOffice" "dist\OpenMerger\engine\LibreOffice" >nul
+> "dist\OpenMerger\edition.json" echo {"edition":"full"}
 
 set "ISCC=ISCC.exe"
 where ISCC.exe >nul 2>nul

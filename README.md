@@ -73,7 +73,7 @@ The resulting `installer-output\OpenMerger-Full-Setup.exe` installs OpenMerger a
 
 ## Which download should users choose?
 
-- **OpenMerger-Setup.exe (Standard):** smaller installer for PDF, image, metadata, and Excel/CSV tools. DOCX-to-PDF and PPTX-to-PDF require LibreOffice to be installed separately.
+- **OpenMerger-Setup.exe (Standard):** smaller installer for PDF, image, metadata, and Excel/CSV tools. DOCX-to-PDF and PPTX-to-PDF are hidden in this edition.
 - **OpenMerger-Full-Setup.exe (Full):** larger offline installer that bundles LibreOffice, so every document conversion tool works immediately.
 
 Run `build-standard-installer.bat` to create the smaller Standard installer. Run `build-full-installer.bat` to create the Full installer.
