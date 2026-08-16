@@ -71,6 +71,13 @@ To build it, install Inno Setup, then:
 
 The resulting `installer-output\OpenMerger-Full-Setup.exe` installs OpenMerger and the bundled engine together. At runtime OpenMerger first checks `engine\LibreOffice\program\soffice.exe`, then falls back to a separately installed LibreOffice. The full installer is substantially larger than the standard portable download because it includes the office engine.
 
+## Which download should users choose?
+
+- **OpenMerger-Setup.exe (Standard):** smaller installer for PDF, image, metadata, and Excel/CSV tools. DOCX-to-PDF and PPTX-to-PDF require LibreOffice to be installed separately.
+- **OpenMerger-Full-Setup.exe (Full):** larger offline installer that bundles LibreOffice, so every document conversion tool works immediately.
+
+Run `build-standard-installer.bat` to create the smaller Standard installer. Run `build-full-installer.bat` to create the Full installer.
+
 ## Recommended settings for 50,000 PDFs
 
 - For old/slow PCs: keep `Workers` as `1`, `Internal batch` as `50`.
