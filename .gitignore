@@ -5,6 +5,11 @@ __pycache__/
 .ruff_cache/
 build/
 dist/
+third_party/LibreOffice/
+third_party/LibreOffice-extract/
+.setup-cache/
+tools/
+installer-output/
 dist.zip
 *.spec.bak
 *.partial

@@ -9,6 +9,7 @@ import json
 import os
 import shutil
 import subprocess
+import sys
 import tempfile
 from collections.abc import Iterable
 from pathlib import Path
@@ -364,14 +365,49 @@ def csv_to_excel(source_path: Path, output_path: Path) -> int:
     return count
 
 
+def find_office_executable(app_root: Path | None = None) -> Path | None:
+    """Find the bundled conversion engine first, then a normal LibreOffice install."""
+    roots: list[Path] = []
+    if app_root is not None:
+        roots.append(app_root)
+    elif getattr(sys, "frozen", False):
+        roots.append(Path(sys.executable).resolve().parent)
+    else:
+        roots.append(Path(__file__).resolve().parents[1])
+
+    configured = os.environ.get("OPENMERGER_SOFFICE")
+    candidates: list[Path] = [Path(configured)] if configured else []
+    candidates.extend(root / "engine" / "LibreOffice" / "program" / "soffice.exe" for root in roots)
+    for variable in ("ProgramFiles", "ProgramFiles(x86)"):
+        directory = os.environ.get(variable)
+        if directory:
+            candidates.append(Path(directory) / "LibreOffice" / "program" / "soffice.exe")
+    for candidate in candidates:
+        if candidate.is_file():
+            return candidate
+
+    on_path = shutil.which("soffice") or shutil.which("libreoffice")
+    return Path(on_path) if on_path else None
+
+
 def office_to_pdf(source_path: Path, output_path: Path) -> None:
-    """Convert DOCX/PPTX using an installed LibreOffice; Word/PowerPoint can be added later."""
+    """Convert DOCX/PPTX using OpenMerger's bundled or installed LibreOffice engine."""
     _ensure_new_output(source_path, output_path)
-    office = shutil.which("soffice") or shutil.which("libreoffice")
+    office = find_office_executable()
     if not office:
-        raise ValueError("DOCX/PPTX to PDF needs LibreOffice installed and available as 'soffice'.")
+        raise ValueError(
+            "The document conversion engine is missing. Install the OpenMerger Full edition "
+            "or install LibreOffice, then try again."
+        )
     with tempfile.TemporaryDirectory() as temp:
-        result = subprocess.run([office, "--headless", "--convert-to", "pdf", "--outdir", temp, str(source_path)], capture_output=True, text=True, check=False)
+        profile = (Path(temp) / "profile").resolve().as_uri()
+        result = subprocess.run(
+            [str(office), "--headless", f"-env:UserInstallation={profile}", "--convert-to", "pdf", "--outdir", temp, str(source_path)],
+            capture_output=True,
+            text=True,
+            check=False,
+            timeout=120,
+        )
         created = Path(temp) / f"{source_path.stem}.pdf"
         if result.returncode or not created.exists():
             raise ValueError(result.stderr or "Office conversion failed.")

@@ -9,6 +9,7 @@ OpenMerger processes PDFs locally on your computer. It does not upload PDFs, fil
 ## Features
 
 - Scans all `.pdf` files from a folder, with optional subfolder scanning.
+- Lets you add only the PDFs you choose from the file picker, or scan a folder and keep only the highlighted PDFs for a smaller merge.
 - Auto-scans when you paste or browse to a valid folder path.
 - Sorts by unique numbers in filenames, natural file name, created date, or modified date.
 - Supports ascending or descending merge order for every sort mode.
@@ -58,6 +59,18 @@ dist\OpenMerger\OpenMerger.exe
 
 Keep the full `dist\OpenMerger` folder together when moving it to another PC.
 
+## Full offline installer
+
+The normal portable build includes every built-in OpenMerger feature. DOCX-to-PDF and PPTX-to-PDF need an office rendering engine; use the **Full** installer to include LibreOffice so those tools work immediately on a new PC.
+
+To build it, install Inno Setup, then:
+
+1. Obtain the official LibreOffice Windows files and place the extracted runtime under `third_party\LibreOffice\program\soffice.exe`.
+2. Include LibreOffice's license and notice files with that runtime, in line with its distribution requirements.
+3. Run `build-full-installer.bat`.
+
+The resulting `installer-output\OpenMerger-Full-Setup.exe` installs OpenMerger and the bundled engine together. At runtime OpenMerger first checks `engine\LibreOffice\program\soffice.exe`, then falls back to a separately installed LibreOffice. The full installer is substantially larger than the standard portable download because it includes the office engine.
+
 ## Recommended settings for 50,000 PDFs
 
 - For old/slow PCs: keep `Workers` as `1`, `Internal batch` as `50`.
@@ -102,10 +115,12 @@ Click **PDF toolbox** in the app header to run common one-file tasks without lea
 - Protect or unlock a PDF when you know the required password.
 - Set title, author, and subject metadata.
 - Inspect image metadata or create a metadata-free PNG/JPG/WebP/TIFF copy before sharing.
+- Add page numbers, text watermarks, or a cover page; export pages as PNG; find/remove blank pages; and find duplicate page candidates.
+- Convert PDF to DOCX or PPTX, Excel to CSV, and CSV to Excel locally. The Full installer also enables DOCX/PPTX to PDF without a separate download.
 
 For image PDFs, **Print A4 + Fit with margins + 300 DPI** is the recommended setting for worksheets, forms, flyers, and printouts. Use **Poster**, **Social portrait**, or **Wide banner** for design-ready marketing exports; choose **Fill and crop** only when you want edge-to-edge artwork.
 
-OCR, scanner acquisition, deskewing, and blank-page removal require dedicated local engines such as OCRmyPDF/Tesseract or scanner drivers. They are intentionally not bundled, so OpenMerger remains a small, local-first application.
+OCR, scanner acquisition, and deskewing require dedicated local engines such as OCRmyPDF/Tesseract or scanner drivers. They are intentionally not bundled, so OpenMerger remains a small, local-first application.
 
 ## Development
 

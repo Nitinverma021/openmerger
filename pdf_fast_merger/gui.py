@@ -113,6 +113,7 @@ class PdfMergerApp(tk.Tk):
         self.folder_var.trace_add("write", self._queue_auto_scan)
         self.search_var.trace_add("write", self._queue_refresh)
         self.bind("<Control-o>", lambda _event: self._browse_folder())
+        self.bind("<Control-p>", lambda _event: self._add_selected_pdfs())
         self.bind("<Control-Return>", lambda _event: self._merge())
         self.bind("<Delete>", lambda _event: self._remove_selected())
         self.bind("<Control-f>", self._focus_search)
@@ -165,6 +166,7 @@ class PdfMergerApp(tk.Tk):
         folder_entry.pack(side=tk.LEFT, fill=tk.X, expand=True, padx=(0, 8))
         folder_entry.bind("<Return>", lambda _event: self._scan())
         ttk.Button(source, text="Browse folder", command=self._browse_folder, style="Quiet.TButton").pack(side=tk.LEFT, padx=(0, 8))
+        ttk.Button(source, text="Add selected PDFs", command=self._add_selected_pdfs, style="Quiet.TButton").pack(side=tk.LEFT, padx=(0, 8))
         ttk.Button(source, text="Scan PDFs", command=self._scan, style="Accent.TButton").pack(side=tk.LEFT)
 
         options = ttk.LabelFrame(root, text="2. Set merge options", padding=8, style="Card.TLabelframe")
@@ -221,6 +223,8 @@ class PdfMergerApp(tk.Tk):
         ttk.Button(toolbar, text="Move up", command=lambda: self._move_selected(-1), style="Quiet.TButton").pack(side=tk.LEFT, padx=(0, 6))
         ttk.Button(toolbar, text="Move down", command=lambda: self._move_selected(1), style="Quiet.TButton").pack(side=tk.LEFT, padx=(0, 6))
         ttk.Button(toolbar, text="Remove", command=self._remove_selected, style="Quiet.TButton").pack(side=tk.LEFT, padx=(0, 6))
+        ttk.Button(toolbar, text="Keep selected", command=self._keep_selected, style="Quiet.TButton").pack(side=tk.LEFT, padx=(0, 6))
+        ttk.Button(toolbar, text="Select visible", command=self._select_visible, style="Quiet.TButton").pack(side=tk.LEFT, padx=(0, 6))
         ttk.Button(toolbar, text="Verify duplicates", command=self._find_duplicates, style="Quiet.TButton").pack(side=tk.LEFT)
         ttk.Button(toolbar, text="Clear list", command=self._clear_files, style="Quiet.TButton").pack(side=tk.LEFT, padx=(6, 0))
         self.page_label = ttk.Label(toolbar, text="")
@@ -390,11 +394,11 @@ class PdfMergerApp(tk.Tk):
                 "Remove blank pages": "Detect near-empty white pages and create a cleaned PDF copy without them.",
                 "Find duplicate pages": "Find visually identical pages by comparing local low-resolution renderings.",
                 "PDF to DOCX": "Extract selectable PDF text into an editable Word document; scanned PDFs need OCR first.",
-                "DOCX to PDF": "Convert Word files using installed LibreOffice.",
+                "DOCX to PDF": "Convert Word files with the bundled Full-edition engine or an installed LibreOffice.",
                 "Excel to CSV": "Export the active Excel worksheet to a UTF-8 CSV file.",
                 "CSV to Excel": "Create an XLSX workbook from a CSV file.",
                 "PDF to PPTX": "Create a PowerPoint with one rendered PDF page per slide.",
-                "PPTX to PDF": "Convert PowerPoint files using installed LibreOffice.",
+                "PPTX to PDF": "Convert PowerPoint files with the bundled Full-edition engine or an installed LibreOffice.",
             }
             description.set(messages[operation.get()])
             if Path(output.get()).name.startswith("output."):
@@ -538,6 +542,40 @@ class PdfMergerApp(tk.Tk):
         if folder:
             self.folder_var.set(folder)
             self._queue_auto_scan(delay_ms=100)
+
+    def _add_selected_pdfs(self) -> None:
+        selected = filedialog.askopenfilenames(
+            title="Choose PDFs to merge",
+            filetypes=[("PDF files", "*.pdf")],
+        )
+        if not selected:
+            return
+        existing = {item.path.resolve() for item in self.files}
+        added: list[PdfInfo] = []
+        skipped = 0
+        for raw_path in selected:
+            path = Path(raw_path).expanduser().resolve()
+            if path in existing:
+                skipped += 1
+                continue
+            try:
+                stat = path.stat()
+            except OSError:
+                skipped += 1
+                continue
+            added.append(PdfInfo(path, path.name, stat.st_size, stat.st_ctime, stat.st_mtime, ()))
+            existing.add(path)
+        if not added:
+            messagebox.showinfo("No PDFs added", "Those PDF files are already in the merge list or cannot be read.")
+            return
+        self.files.extend(added)
+        self.page_index = 0
+        self._refresh_tree()
+        total_size = format_size(sum(item.size for item in self.files))
+        detail = f" ({skipped} skipped)" if skipped else ""
+        self.summary_var.set(f"{len(self.files):,} PDFs ready to merge  •  {total_size} total  •  {self._estimate_output_count()} output file(s)")
+        self.status_var.set(f"Added {len(added)} selected PDF(s){detail}. Drag rows to set their order.")
+        self._log(f"Added {len(added)} selected PDF(s){detail}.")
 
     def _browse_output(self) -> None:
         path = filedialog.asksaveasfilename(
@@ -844,6 +882,23 @@ class PdfMergerApp(tk.Tk):
         self._refresh_tree()
         self.summary_var.set(f"{len(self.files):,} PDFs remain in the merge list")
         self._log(f"Removed {len(indexes)} PDF(s) from merge list.")
+
+    def _keep_selected(self) -> None:
+        indexes = self._selected_file_indexes()
+        if not indexes:
+            messagebox.showinfo("Select PDFs", "Select the PDFs to merge first. Hold Ctrl while clicking to select more than one.")
+            return
+        selected = set(indexes)
+        removed = len(self.files) - len(selected)
+        self.files = [item for index, item in enumerate(self.files) if index in selected]
+        self.page_index = 0
+        self._refresh_tree()
+        self.summary_var.set(f"{len(self.files):,} selected PDF(s) ready to merge")
+        self.status_var.set(f"Keeping {len(self.files)} selected PDF(s); removed {removed} from this merge job.")
+        self._log(f"Kept {len(self.files)} selected PDF(s); removed {removed} from merge list.")
+
+    def _select_visible(self) -> None:
+        self.tree.selection_set(self.tree.get_children())
 
     def _clear_files(self) -> None:
         if not self.files:

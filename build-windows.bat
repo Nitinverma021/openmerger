@@ -15,5 +15,4 @@ pyinstaller --noconfirm --clean OpenMerger-Windows.spec
 echo.
 echo Build complete:
 echo dist\OpenMerger\OpenMerger.exe
-pause
-
+if /i not "%~1"=="--non-interactive" pause

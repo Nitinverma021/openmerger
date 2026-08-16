@@ -10,6 +10,7 @@ from pdf_fast_merger.operations import (
     create_cover_page,
     find_blank_pages,
     find_duplicate_pages,
+    find_office_executable,
     image_metadata_report,
     image_metadata_reports,
     images_to_pdf,
@@ -147,3 +148,10 @@ def test_page_rendering_and_cleanup_tools(tmp_path: Path) -> None:
     assert remove_blank_pages(source, tmp_path / "clean.pdf") == [1]
     with pymupdf.open(tmp_path / "clean.pdf") as cleaned:
         assert cleaned.page_count == 2
+
+
+def test_bundled_office_engine_is_preferred(tmp_path: Path) -> None:
+    bundled = tmp_path / "engine" / "LibreOffice" / "program" / "soffice.exe"
+    bundled.parent.mkdir(parents=True)
+    bundled.write_bytes(b"placeholder")
+    assert find_office_executable(tmp_path) == bundled
