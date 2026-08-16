@@ -11,7 +11,16 @@ from pathlib import Path
 from tkinter import filedialog, messagebox, ttk
 
 from .core import MergeResult, PdfInfo, format_size, ghostscript_available, merge_collection, scan_folder
-from .operations import images_to_pdf, protect_pdf, split_pdf, transform_pdf, unlock_pdf, update_metadata
+from .operations import (
+    image_metadata_report,
+    images_to_pdf,
+    protect_pdf,
+    remove_image_metadata,
+    split_pdf,
+    transform_pdf,
+    unlock_pdf,
+    update_metadata,
+)
 
 SORT_LABELS = {
     "Number in filename": "number",
@@ -265,6 +274,8 @@ class PdfMergerApp(tk.Tk):
             "Protect PDF",
             "Unlock PDF",
             "Edit metadata",
+            "Inspect image metadata",
+            "Remove image metadata",
         ]
         ttk.Label(frame, text="Task").grid(row=2, column=0, sticky=tk.W)
         task_box = ttk.Combobox(frame, textvariable=operation, values=labels, state="readonly", width=28)
@@ -274,14 +285,23 @@ class PdfMergerApp(tk.Tk):
         ttk.Entry(frame, textvariable=source).grid(row=3, column=1, columnspan=2, sticky=tk.EW, padx=8, pady=(10, 0))
 
         def choose_source() -> None:
-            if operation.get() == "Images to PDF":
+            if operation.get() in {"Images to PDF", "Inspect image metadata", "Remove image metadata"}:
+                if operation.get() == "Images to PDF":
+                    selected = filedialog.askopenfilenames(
+                        parent=window,
+                        title="Choose images",
+                        filetypes=[("Image files", "*.png *.jpg *.jpeg *.bmp *.tif *.tiff *.webp")],
+                    )
+                    if selected:
+                        source.set("|".join(selected))
+                    return
                 selected = filedialog.askopenfilenames(
                     parent=window,
-                    title="Choose images",
+                    title="Choose an image",
                     filetypes=[("Image files", "*.png *.jpg *.jpeg *.bmp *.tif *.tiff *.webp")],
                 )
                 if selected:
-                    source.set("|".join(selected))
+                    source.set(selected[0])
             else:
                 selected = filedialog.askopenfilename(parent=window, title="Choose PDF", filetypes=[("PDF files", "*.pdf")])
                 if selected:
@@ -290,7 +310,7 @@ class PdfMergerApp(tk.Tk):
         ttk.Button(frame, text="Choose input", command=choose_source, style="Quiet.TButton").grid(row=3, column=3, pady=(10, 0))
         ttk.Label(frame, text="Output").grid(row=4, column=0, sticky=tk.W, pady=(10, 0))
         ttk.Entry(frame, textvariable=output).grid(row=4, column=1, columnspan=2, sticky=tk.EW, padx=8, pady=(10, 0))
-        ttk.Button(frame, text="Save as", command=lambda: self._choose_tool_output(output, window), style="Quiet.TButton").grid(row=4, column=3, pady=(10, 0))
+        ttk.Button(frame, text="Save as", command=lambda: self._choose_tool_output(output, window, operation.get()), style="Quiet.TButton").grid(row=4, column=3, pady=(10, 0))
 
         ttk.Label(frame, text="Pages").grid(row=5, column=0, sticky=tk.W, pady=(10, 0))
         ttk.Entry(frame, textvariable=pages, width=26).grid(row=5, column=1, sticky=tk.W, padx=8, pady=(10, 0))
@@ -326,6 +346,8 @@ class PdfMergerApp(tk.Tk):
                 "Protect PDF": "Create a password-protected copy. Password fields are never saved.",
                 "Unlock PDF": "Remove protection from a PDF when you know its current password.",
                 "Edit metadata": "Create a copy with a title, author, and subject.",
+                "Inspect image metadata": "Show image dimensions, camera/EXIF, GPS, copyright, and other embedded details locally.",
+                "Remove image metadata": "Create an image copy without EXIF, GPS, XMP, and other embedded metadata.",
             }
             description.set(messages[operation.get()])
 
@@ -338,8 +360,8 @@ class PdfMergerApp(tk.Tk):
                 "title": title.get(), "author": author.get(), "subject": subject.get(), "image_preset": image_preset.get(),
                 "image_fit": image_fit.get(), "image_margin": image_margin.get(), "image_dpi": image_dpi.get(),
             }
-            if not values["source"] or not values["output"]:
-                messagebox.showwarning("PDF toolbox", "Choose an input and output file first.")
+            if not values["source"] or (values["operation"] != "Inspect image metadata" and not values["output"]):
+                messagebox.showwarning("PDF toolbox", "Choose an input and, when required, an output file first.")
                 return
             threading.Thread(target=self._tool_worker, args=(values,), daemon=True).start()
 
@@ -350,10 +372,27 @@ class PdfMergerApp(tk.Tk):
             window.destroy()
         self.toolbox_window = None
 
-    def _choose_tool_output(self, variable: tk.StringVar, parent: tk.Misc | None = None) -> None:
-        path = filedialog.asksaveasfilename(parent=parent, title="Save PDF as", defaultextension=".pdf", filetypes=[("PDF files", "*.pdf")])
+    def _choose_tool_output(self, variable: tk.StringVar, parent: tk.Misc | None = None, operation: str = "") -> None:
+        if operation == "Remove image metadata":
+            path = filedialog.asksaveasfilename(parent=parent, title="Save metadata-free image as", defaultextension=".png", filetypes=[("PNG image", "*.png"), ("JPEG image", "*.jpg"), ("WebP image", "*.webp"), ("TIFF image", "*.tiff")])
+        else:
+            path = filedialog.asksaveasfilename(parent=parent, title="Save PDF as", defaultextension=".pdf", filetypes=[("PDF files", "*.pdf")])
         if path:
             variable.set(path)
+
+    def _show_metadata_report(self, report: str) -> None:
+        window = tk.Toplevel(self)
+        window.title("Image metadata report")
+        window.geometry("720x520")
+        frame = ttk.Frame(window, padding=12, style="App.TFrame")
+        frame.pack(fill=tk.BOTH, expand=True)
+        text_box = tk.Text(frame, wrap=tk.WORD, background="#ffffff", foreground="#172033", relief=tk.FLAT)
+        text_box.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+        scroll = ttk.Scrollbar(frame, orient=tk.VERTICAL, command=text_box.yview)
+        scroll.pack(side=tk.RIGHT, fill=tk.Y)
+        text_box.configure(yscrollcommand=scroll.set)
+        text_box.insert(tk.END, report)
+        text_box.configure(state=tk.DISABLED)
 
     def _tool_worker(self, values: dict[str, object]) -> None:
         try:
@@ -372,6 +411,12 @@ class PdfMergerApp(tk.Tk):
                     float(values["image_margin"]), int(values["image_dpi"]),
                 )
                 message = f"Created {output.name} from {count} image(s)."
+            elif operation == "Inspect image metadata":
+                self.events.put(("metadata_report", image_metadata_report(Path(str(values["source"])).expanduser().resolve())))
+                return
+            elif operation == "Remove image metadata":
+                remove_image_metadata(Path(str(values["source"])).expanduser().resolve(), output)
+                message = f"Created metadata-free image: {output.name}."
             else:
                 source = Path(str(values["source"])).expanduser().resolve()
                 if operation == "Extract / rotate pages":
@@ -599,6 +644,8 @@ class PdfMergerApp(tk.Tk):
                     self.status_var.set(message)
                     self._log(message)
                     messagebox.showinfo("PDF toolbox", message)
+                elif event == "metadata_report":
+                    self._show_metadata_report(str(payload))
                 elif event == "error":
                     self._set_merge_buttons_idle()
                     self.status_var.set("Error")

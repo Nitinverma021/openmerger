@@ -4,7 +4,14 @@ import pikepdf
 from PIL import Image
 
 from pdf_fast_merger.core import PdfInfo, merge_collection, merge_paths, natural_key, sort_pdfs
-from pdf_fast_merger.operations import images_to_pdf, protect_pdf, unlock_pdf, update_metadata
+from pdf_fast_merger.operations import (
+    image_metadata_report,
+    images_to_pdf,
+    protect_pdf,
+    remove_image_metadata,
+    unlock_pdf,
+    update_metadata,
+)
 
 
 def make_pdf(path: Path) -> PdfInfo:
@@ -80,3 +87,16 @@ def test_local_toolbox_operations(tmp_path: Path) -> None:
     with pikepdf.Pdf.open(metadata) as document:
         assert len(document.pages) == 1
         assert str(document.docinfo["/Title"]) == "OpenMerger test"
+
+
+def test_image_metadata_report_and_removal(tmp_path: Path) -> None:
+    source = tmp_path / "private.jpg"
+    image = Image.new("RGB", (30, 20), "blue")
+    exif = Image.Exif()
+    exif[270] = "Private test description"
+    image.save(source, exif=exif)
+    image.close()
+    assert "Private test description" in image_metadata_report(source)
+    cleaned = tmp_path / "clean.jpg"
+    remove_image_metadata(source, cleaned)
+    assert "Private test description" not in image_metadata_report(cleaned)

@@ -20,6 +20,7 @@ OpenMerger processes PDFs locally on your computer. It does not upload PDFs, fil
 - Supports a per-job PDF password for encrypted inputs; passwords are never persisted.
 - Includes an integrated PDF Toolbox for extracting, rotating, splitting, protecting, unlocking, and updating PDF metadata.
 - Converts PNG, JPG, JPEG, BMP, TIFF, and WebP images into a PDF locally.
+- Inspects EXIF-style image metadata—including dimensions, camera details, date/time, GPS, copyright, and XMP presence—and can make a metadata-free image copy for privacy.
 - Produces polished image PDFs with A4, Letter, poster, social portrait, and wide-banner page presets; choose margins, fit/crop behavior, and 150 or 300 DPI.
 - Can pause/cancel long merges and resume chunk jobs by skipping existing parts.
 - Saves `failed_pdfs.txt` if corrupted PDFs are skipped.
@@ -100,6 +101,7 @@ Click **PDF toolbox** in the app header to run common one-file tasks without lea
 - Convert one or more images into one PDF.
 - Protect or unlock a PDF when you know the required password.
 - Set title, author, and subject metadata.
+- Inspect image metadata or create a metadata-free PNG/JPG/WebP/TIFF copy before sharing.
 
 For image PDFs, **Print A4 + Fit with margins + 300 DPI** is the recommended setting for worksheets, forms, flyers, and printouts. Use **Poster**, **Social portrait**, or **Wide banner** for design-ready marketing exports; choose **Fill and crop** only when you want edge-to-edge artwork.
 

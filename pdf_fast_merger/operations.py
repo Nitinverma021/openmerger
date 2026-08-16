@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import argparse
+import json
+import os
 from collections.abc import Iterable
 from pathlib import Path
 from typing import Literal
@@ -23,6 +25,78 @@ PAGE_SIZES_INCHES: dict[ImagePagePreset, tuple[float, float] | None] = {
 def _ensure_new_output(source_path: Path, output_path: Path) -> None:
     if source_path.expanduser().resolve() == output_path.expanduser().resolve():
         raise ValueError("Choose a different output file; source PDFs are never overwritten.")
+
+
+def read_image_metadata(image_path: Path) -> dict[str, object]:
+    """Return a readable, local-only metadata report for an image."""
+    from PIL import ExifTags, Image
+
+    with Image.open(image_path) as image:
+        report: dict[str, object] = {
+            "File": image_path.name,
+            "Format": image.format or image_path.suffix.lstrip(".").upper(),
+            "File size": f"{image_path.stat().st_size:,} bytes",
+            "Dimensions": f"{image.width} × {image.height} px",
+            "Color mode": image.mode,
+        }
+        if image.info.get("dpi"):
+            report["DPI"] = " × ".join(str(round(float(value), 2)) for value in image.info["dpi"])
+        exif = image.getexif()
+        for key, value in exif.items():
+            name = ExifTags.TAGS.get(key, f"EXIF {key}")
+            if name == "GPSInfo":
+                try:
+                    gps = exif.get_ifd(ExifTags.IFD.GPSInfo)
+                except (AttributeError, KeyError, TypeError):
+                    gps = value if isinstance(value, dict) else {}
+                report["GPS metadata"] = {ExifTags.GPSTAGS.get(item, str(item)): _metadata_value(entry) for item, entry in gps.items()}
+            else:
+                report[name] = _metadata_value(value)
+        xmp = image.info.get("xmp")
+        if xmp:
+            report["XMP metadata"] = f"Present ({len(xmp)} bytes)"
+    return report
+
+
+def _metadata_value(value: object) -> object:
+    if isinstance(value, bytes):
+        return f"Binary data ({len(value)} bytes)"
+    if isinstance(value, dict):
+        return {str(key): _metadata_value(item) for key, item in value.items()}
+    if isinstance(value, (list, tuple)):
+        return [_metadata_value(item) for item in value]
+    return str(value)
+
+
+def image_metadata_report(image_path: Path) -> str:
+    return json.dumps(read_image_metadata(image_path), indent=2, ensure_ascii=False)
+
+
+def remove_image_metadata(source_path: Path, output_path: Path) -> None:
+    """Create a visually equivalent image copy without EXIF/XMP/private metadata."""
+    from PIL import Image
+
+    _ensure_new_output(source_path, output_path)
+    with Image.open(source_path) as source:
+        clean = source.copy()
+        try:
+            suffix = output_path.suffix.casefold()
+            save_options: dict[str, object] = {}
+            if suffix in {".jpg", ".jpeg"}:
+                if clean.mode not in {"RGB", "L"}:
+                    converted = clean.convert("RGB")
+                    clean.close()
+                    clean = converted
+                save_options = {"quality": 95, "subsampling": 0, "optimize": True}
+            partial = output_path.with_suffix(output_path.suffix + ".partial")
+            formats = {".jpg": "JPEG", ".jpeg": "JPEG", ".png": "PNG", ".webp": "WEBP", ".bmp": "BMP", ".tif": "TIFF", ".tiff": "TIFF"}
+            image_format = formats.get(suffix)
+            if not image_format:
+                raise ValueError("Output must use JPG, PNG, WebP, BMP, or TIFF.")
+            clean.save(partial, format=image_format, **save_options)
+            os.replace(partial, output_path)
+        finally:
+            clean.close()
 
 
 def parse_page_ranges(specification: str, page_count: int) -> list[int]:
