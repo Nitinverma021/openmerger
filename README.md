@@ -71,12 +71,20 @@ To build it, install Inno Setup, then:
 
 The resulting `installer-output\OpenMerger-Full-Setup.exe` installs OpenMerger and the bundled engine together. At runtime OpenMerger first checks `engine\LibreOffice\program\soffice.exe`, then falls back to a separately installed LibreOffice. The full installer is substantially larger than the standard portable download because it includes the office engine.
 
-## Which download should users choose?
+## Downloads: Standard or Full
 
-- **OpenMerger-Setup.exe (Standard):** smaller installer for PDF, image, metadata, and Excel/CSV tools. DOCX-to-PDF and PPTX-to-PDF are hidden in this edition.
-- **OpenMerger-Full-Setup.exe (Full):** larger offline installer that bundles LibreOffice, so every document conversion tool works immediately.
+Download either installer from the [GitHub Releases page](https://github.com/Nitinverma021/openmerger/releases/latest). After downloading, double-click the `.exe` file and follow the installer steps. No Python setup is required.
 
-Run `build-standard-installer.bat` to create the smaller Standard installer. Run `build-full-installer.bat` to create the Full installer.
+| Download | Size | Best for | Included tools |
+| --- | ---: | --- | --- |
+| `OpenMerger-Setup.exe` — Standard | about 36 MB | Most PDF, image, and spreadsheet jobs | All PDF merge tools, PDF Toolbox, images to PDF, PDF to DOCX, PDF to PPTX, Excel to CSV, CSV to Excel, metadata tools, page numbering, watermarks, cover pages, page-to-PNG export, blank-page removal, and duplicate-page checks. |
+| `OpenMerger-Full-Setup.exe` — Full | about 341 MB | People who also need Word or PowerPoint files converted to PDF without installing anything else | Everything in Standard, plus DOCX to PDF and PPTX to PDF using the bundled offline LibreOffice engine. |
+
+The Standard edition deliberately hides **DOCX to PDF** and **PPTX to PDF**, because it does not include LibreOffice. The Full edition includes those tools and works without an internet connection or separate LibreOffice installation.
+
+Both editions can use the normal lossless PDF compression. **Strong compression** is optional in both editions and requires Ghostscript if the user wants that specific mode.
+
+For maintainers: run `build-standard-installer.bat` to create the smaller Standard installer, or `build-full-installer.bat` to create the Full installer.
 
 ## Recommended settings for 50,000 PDFs
 
