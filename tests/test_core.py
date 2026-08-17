@@ -4,9 +4,12 @@ import pikepdf
 from PIL import Image
 
 from pdf_fast_merger.core import PdfInfo, merge_collection, merge_paths, natural_key, sort_pdfs
+from pdf_fast_merger.gui import _parse_capture_region
 from pdf_fast_merger.operations import (
     add_page_numbers,
     add_text_watermark,
+    capture_screenshot,
+    convert_images,
     create_cover_page,
     find_blank_pages,
     find_duplicate_pages,
@@ -17,6 +20,7 @@ from pdf_fast_merger.operations import (
     pdf_to_images,
     protect_pdf,
     remove_blank_pages,
+    remove_image_background,
     remove_image_metadata,
     unlock_pdf,
     update_metadata,
@@ -155,3 +159,32 @@ def test_bundled_office_engine_is_preferred(tmp_path: Path) -> None:
     bundled.parent.mkdir(parents=True)
     bundled.write_bytes(b"placeholder")
     assert find_office_executable(tmp_path) == bundled
+
+
+def test_image_conversion_background_removal_and_screenshot(tmp_path: Path, monkeypatch) -> None:
+    source = tmp_path / "source.png"
+    image = Image.new("RGB", (80, 80), "white")
+    for x in range(20, 60):
+        for y in range(20, 60):
+            image.putpixel((x, y), (220, 30, 30))
+    image.save(source)
+    image.close()
+
+    converted = convert_images([source], tmp_path / "converted", "webp", 40, 40, 80)
+    assert len(converted) == 1
+    with Image.open(converted[0]) as result:
+        assert result.size == (40, 40)
+
+    transparent = tmp_path / "transparent.png"
+    remove_image_background(source, transparent)
+    with Image.open(transparent) as result:
+        assert result.mode == "RGBA"
+        assert result.getpixel((0, 0))[3] == 0
+
+    from PIL import ImageGrab
+
+    monkeypatch.setattr(ImageGrab, "grab", lambda **_kwargs: Image.new("RGB", (30, 20), "blue"))
+    screenshot = tmp_path / "screenshot.png"
+    capture_screenshot(screenshot, annotation="OpenMerger")
+    assert screenshot.exists()
+    assert _parse_capture_region("1,2,30,40") == (1, 2, 30, 40)

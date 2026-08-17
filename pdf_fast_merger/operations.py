@@ -113,6 +113,204 @@ def remove_image_metadata(source_path: Path, output_path: Path) -> None:
             clean.close()
 
 
+def convert_images(
+    source_paths: Iterable[Path],
+    output_folder: Path,
+    output_format: Literal["jpg", "png", "webp", "bmp", "tiff"] = "png",
+    max_width: int = 0,
+    max_height: int = 0,
+    quality: int = 90,
+) -> list[Path]:
+    """Convert, optionally resize, and locally optimize one or more images."""
+    from PIL import Image, ImageOps
+
+    _register_heif_support()
+    paths = list(source_paths)
+    if not paths:
+        raise ValueError("Choose at least one image.")
+    if max_width < 0 or max_height < 0 or not 1 <= quality <= 100:
+        raise ValueError("Image dimensions must be positive and quality must be between 1 and 100.")
+    formats = {"jpg": ("JPEG", ".jpg"), "png": ("PNG", ".png"), "webp": ("WEBP", ".webp"), "bmp": ("BMP", ".bmp"), "tiff": ("TIFF", ".tiff")}
+    image_format, suffix = formats[output_format]
+    output_folder.mkdir(parents=True, exist_ok=True)
+    outputs: list[Path] = []
+    for source_path in paths:
+        target = output_folder / f"{source_path.stem}_converted{suffix}"
+        if target.expanduser().resolve() == source_path.expanduser().resolve():
+            target = output_folder / f"{source_path.stem}_converted_copy{suffix}"
+        with Image.open(source_path) as source:
+            image = ImageOps.exif_transpose(source)
+            try:
+                if max_width or max_height:
+                    bounds = (max_width or image.width, max_height or image.height)
+                    image.thumbnail(bounds, Image.Resampling.LANCZOS)
+                if image_format == "JPEG" and image.mode not in {"RGB", "L"}:
+                    converted = image.convert("RGB")
+                    image.close()
+                    image = converted
+                partial = target.with_suffix(target.suffix + ".partial")
+                options: dict[str, object] = {"quality": quality} if image_format in {"JPEG", "WEBP"} else {}
+                image.save(partial, format=image_format, **options)
+                os.replace(partial, target)
+                outputs.append(target)
+            finally:
+                image.close()
+    return outputs
+
+
+def remove_image_background(source_path: Path, output_path: Path) -> None:
+    """Create a transparent PNG by separating a centered foreground from its background locally."""
+    import cv2
+    import numpy as np
+
+    _ensure_new_output(source_path, output_path)
+    if output_path.suffix.casefold() != ".png":
+        raise ValueError("Background removal creates a transparent PNG; choose a .png output name.")
+    image = cv2.imread(str(source_path), cv2.IMREAD_UNCHANGED)
+    if image is None:
+        raise ValueError("Unable to read this image.")
+    if image.ndim == 2:
+        image = cv2.cvtColor(image, cv2.COLOR_GRAY2BGRA)
+    bgr = image[:, :, :3]
+    height, width = bgr.shape[:2]
+    if width < 3 or height < 3:
+        raise ValueError("The image is too small for background removal.")
+    mask = np.zeros((height, width), np.uint8)
+    background_model = np.zeros((1, 65), np.float64)
+    foreground_model = np.zeros((1, 65), np.float64)
+    cv2.grabCut(bgr, mask, (1, 1, width - 2, height - 2), background_model, foreground_model, 5, cv2.GC_INIT_WITH_RECT)
+    alpha = np.where((mask == cv2.GC_FGD) | (mask == cv2.GC_PR_FGD), 255, 0).astype(np.uint8)
+    if image.shape[2] == 4:
+        alpha = np.minimum(alpha, image[:, :, 3])
+    result = np.dstack((bgr, alpha))
+    partial = output_path.with_suffix(".partial.png")
+    if not cv2.imwrite(str(partial), result):
+        raise ValueError("Unable to save the transparent PNG.")
+    os.replace(partial, output_path)
+
+
+def capture_screenshot(
+    output_path: Path,
+    region: tuple[int, int, int, int] | None = None,
+    annotation: str = "",
+) -> Path:
+    """Capture the full screen or a rectangular region, with an optional caption."""
+    from PIL import ImageDraw, ImageFont, ImageGrab
+
+    if output_path.suffix.casefold() not in {".png", ".jpg", ".jpeg", ".webp"}:
+        raise ValueError("Screenshot output must be PNG, JPG, or WebP.")
+    image = ImageGrab.grab(bbox=region, all_screens=True)
+    try:
+        if annotation.strip():
+            draw = ImageDraw.Draw(image, "RGBA")
+            font = ImageFont.load_default()
+            left, top, right, bottom = draw.textbbox((0, 0), annotation.strip(), font=font)
+            padding = 10
+            draw.rounded_rectangle((10, 10, right - left + 20 + padding, bottom - top + 20 + padding), radius=6, fill=(0, 0, 0, 175))
+            draw.text((20, 20), annotation.strip(), font=font, fill=(255, 255, 255, 255))
+        partial = output_path.with_suffix(output_path.suffix + ".partial")
+        image_format = {".png": "PNG", ".jpg": "JPEG", ".jpeg": "JPEG", ".webp": "WEBP"}[output_path.suffix.casefold()]
+        if image_format == "JPEG" and image.mode not in {"RGB", "L"}:
+            converted = image.convert("RGB")
+            image.close()
+            image = converted
+        image.save(partial, format=image_format)
+        os.replace(partial, output_path)
+    finally:
+        image.close()
+    return output_path
+
+
+def scan_document_from_webcam(output_path: Path, camera_index: int = 0) -> int:
+    """Capture document pages from a webcam; Space captures, Enter finishes, Esc cancels."""
+    import cv2
+    from PIL import Image
+
+    if output_path.suffix.casefold() != ".pdf":
+        raise ValueError("Webcam scans must be saved as a PDF file.")
+    camera = cv2.VideoCapture(camera_index)
+    if not camera.isOpened():
+        raise ValueError("No webcam was found. Connect a camera and try again.")
+    window_name = "OpenMerger scanner — Space: capture | Enter: finish | Esc: cancel"
+    captured: list[Path] = []
+    try:
+        with tempfile.TemporaryDirectory() as temp:
+            while True:
+                available, frame = camera.read()
+                if not available:
+                    raise ValueError("Unable to read from the webcam.")
+                preview = _document_crop(frame)
+                cv2.imshow(window_name, preview)
+                key = cv2.waitKey(10) & 0xFF
+                if key == 27:
+                    raise ValueError("Webcam scan cancelled.")
+                if key in {13, 10}:
+                    break
+                if key == 32:
+                    target = Path(temp) / f"scan_{len(captured) + 1:04d}.jpg"
+                    if not cv2.imwrite(str(target), preview):
+                        raise ValueError("Unable to save the captured page.")
+                    captured.append(target)
+            if not captured:
+                raise ValueError("Capture at least one page with the Space bar before finishing.")
+            images = [Image.open(path).convert("RGB") for path in captured]
+            try:
+                partial = output_path.with_suffix(output_path.suffix + ".partial")
+                images[0].save(partial, "PDF", save_all=True, append_images=images[1:], resolution=200)
+                os.replace(partial, output_path)
+            finally:
+                for image in images:
+                    image.close()
+    finally:
+        camera.release()
+        cv2.destroyAllWindows()
+    return len(captured)
+
+
+def _document_crop(frame: object) -> object:
+    """Return a perspective-corrected document when a four-corner page is visible."""
+    import cv2
+
+    height, width = frame.shape[:2]
+    scale = 900 / max(height, width)
+    small = cv2.resize(frame, (round(width * scale), round(height * scale)))
+    gray = cv2.cvtColor(small, cv2.COLOR_BGR2GRAY)
+    edges = cv2.Canny(cv2.GaussianBlur(gray, (5, 5), 0), 60, 180)
+    contours, _ = cv2.findContours(edges, cv2.RETR_LIST, cv2.CHAIN_APPROX_SIMPLE)
+    for contour in sorted(contours, key=cv2.contourArea, reverse=True):
+        approximation = cv2.approxPolyDP(contour, 0.02 * cv2.arcLength(contour, True), True)
+        if len(approximation) == 4 and cv2.contourArea(approximation) > small.shape[0] * small.shape[1] * 0.12:
+            points = approximation.reshape(4, 2).astype("float32") / scale
+            return _four_point_transform(frame, points)
+    return frame
+
+
+def _four_point_transform(image: object, points: object) -> object:
+    import cv2
+    import numpy as np
+
+    ordered = np.zeros((4, 2), dtype="float32")
+    sums = points.sum(axis=1)
+    differences = np.diff(points, axis=1)
+    ordered[0] = points[np.argmin(sums)]
+    ordered[2] = points[np.argmax(sums)]
+    ordered[1] = points[np.argmin(differences)]
+    ordered[3] = points[np.argmax(differences)]
+    top_left, top_right, bottom_right, bottom_left = ordered
+    width = round(max(np.linalg.norm(bottom_right - bottom_left), np.linalg.norm(top_right - top_left)))
+    height = round(max(np.linalg.norm(top_right - bottom_right), np.linalg.norm(top_left - bottom_left)))
+    destination = np.array([[0, 0], [width - 1, 0], [width - 1, height - 1], [0, height - 1]], dtype="float32")
+    return cv2.warpPerspective(image, cv2.getPerspectiveTransform(ordered, destination), (width, height))
+
+
+def _register_heif_support() -> None:
+    try:
+        import pillow_heif
+    except ImportError:
+        return
+    pillow_heif.register_heif_opener()
+
+
 def add_page_numbers(source_path: Path, output_path: Path, position: str = "bottom-center", password: str | None = None) -> None:
     """Create a numbered PDF copy using a subtle footer on each page."""
     import pikepdf

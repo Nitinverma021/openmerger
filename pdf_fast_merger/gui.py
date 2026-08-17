@@ -15,6 +15,8 @@ from .core import MergeResult, PdfInfo, format_size, ghostscript_available, merg
 from .operations import (
     add_page_numbers,
     add_text_watermark,
+    capture_screenshot,
+    convert_images,
     create_cover_page,
     csv_to_excel,
     excel_to_csv,
@@ -27,7 +29,9 @@ from .operations import (
     pdf_to_pptx,
     protect_pdf,
     remove_blank_pages,
+    remove_image_background,
     remove_image_metadata,
+    scan_document_from_webcam,
     split_pdf,
     transform_pdf,
     unlock_pdf,
@@ -58,7 +62,21 @@ TOOL_OUTPUT_SPECS = {
     "CSV to Excel": (".xlsx", "Excel workbooks", "*.xlsx"),
     "PDF to PPTX": (".pptx", "PowerPoint files", "*.pptx"),
     "Remove image metadata": (".png", "PNG image", "*.png"),
+    "Remove image background": (".png", "transparent PNG image", "*.png"),
+    "Screenshot capture": (".png", "PNG image", "*.png"),
 }
+
+
+def _parse_capture_region(value: str) -> tuple[int, int, int, int] | None:
+    if not value.strip():
+        return None
+    try:
+        left, top, right, bottom = (int(part.strip()) for part in value.split(","))
+    except ValueError as exc:
+        raise ValueError("Screenshot region must be left,top,right,bottom (for example: 100,100,900,700).") from exc
+    if right <= left or bottom <= top:
+        raise ValueError("Screenshot region right/bottom values must be larger than left/top values.")
+    return left, top, right, bottom
 
 
 def is_standard_edition() -> bool:
@@ -284,7 +302,7 @@ class PdfMergerApp(tk.Tk):
         window = tk.Toplevel(self)
         self.toolbox_window = window
         window.title("OpenMerger PDF Toolbox")
-        window.geometry("760x590")
+        window.geometry("780x670")
         window.minsize(650, 520)
         window.transient(self)
         window.protocol("WM_DELETE_WINDOW", lambda: self._close_toolbox(window))
@@ -309,6 +327,10 @@ class PdfMergerApp(tk.Tk):
         image_fit = tk.StringVar(value="Fit with margins")
         image_margin = tk.DoubleVar(value=8)
         image_dpi = tk.IntVar(value=150)
+        image_max_width = tk.IntVar(value=0)
+        image_max_height = tk.IntVar(value=0)
+        image_quality = tk.IntVar(value=90)
+        image_convert_format = tk.StringVar(value="PNG")
 
         labels = [
             "Extract / rotate pages",
@@ -319,6 +341,10 @@ class PdfMergerApp(tk.Tk):
             "Edit metadata",
             "Inspect image metadata",
             "Remove image metadata",
+            "Convert / resize images",
+            "Remove image background",
+            "Screenshot capture",
+            "Webcam document scanner",
             "Add page numbers",
             "Add text watermark",
             "Create cover page",
@@ -342,17 +368,17 @@ class PdfMergerApp(tk.Tk):
         ttk.Entry(frame, textvariable=source).grid(row=3, column=1, columnspan=2, sticky=tk.EW, padx=8, pady=(10, 0))
 
         def choose_source() -> None:
-            if operation.get() in {"Images to PDF", "Inspect image metadata", "Remove image metadata"}:
-                if operation.get() in {"Images to PDF", "Inspect image metadata"}:
+            if operation.get() in {"Images to PDF", "Inspect image metadata", "Remove image metadata", "Convert / resize images", "Remove image background"}:
+                if operation.get() in {"Images to PDF", "Inspect image metadata", "Convert / resize images"}:
                     selected = filedialog.askopenfilenames(
                         parent=window,
-                        title="Choose images" if operation.get() == "Images to PDF" else "Choose images to inspect",
-                        filetypes=[("Image files", "*.png *.jpg *.jpeg *.bmp *.tif *.tiff *.webp")],
+                        title="Choose images",
+                        filetypes=[("Image files", "*.png *.jpg *.jpeg *.bmp *.tif *.tiff *.webp *.heic *.heif")],
                     )
                     if selected:
                         source.set("|".join(selected))
                     return
-                selected = filedialog.askopenfilename(parent=window, title="Choose an image", filetypes=[("Image files", "*.png *.jpg *.jpeg *.bmp *.tif *.tiff *.webp")])
+                selected = filedialog.askopenfilename(parent=window, title="Choose an image", filetypes=[("Image files", "*.png *.jpg *.jpeg *.bmp *.tif *.tiff *.webp *.heic *.heif")])
                 if selected:
                     source.set(selected)
             else:
@@ -388,6 +414,13 @@ class PdfMergerApp(tk.Tk):
         ttk.Spinbox(frame, from_=0, to=30, increment=1, textvariable=image_margin, width=5).grid(row=10, column=3, sticky=tk.W, pady=(10, 0))
         ttk.Label(frame, text="Margin mm  •  150 DPI is best for screen; 300 DPI for print.").grid(row=11, column=0, columnspan=3, sticky=tk.W, pady=(6, 0))
         ttk.Combobox(frame, textvariable=image_dpi, values=(150, 300), state="readonly", width=5).grid(row=11, column=3, sticky=tk.W, pady=(6, 0))
+        ttk.Label(frame, text="Convert format / max px").grid(row=12, column=0, sticky=tk.W, pady=(10, 0))
+        ttk.Combobox(frame, textvariable=image_convert_format, values=("PNG", "JPG", "WebP", "BMP", "TIFF"), state="readonly", width=8).grid(row=12, column=1, sticky=tk.W, padx=8, pady=(10, 0))
+        ttk.Spinbox(frame, from_=0, to=10000, textvariable=image_max_width, width=8).grid(row=12, column=2, sticky=tk.W, pady=(10, 0))
+        ttk.Spinbox(frame, from_=0, to=10000, textvariable=image_max_height, width=8).grid(row=12, column=3, sticky=tk.W, pady=(10, 0))
+        ttk.Label(frame, text="JPG/WebP quality").grid(row=13, column=0, sticky=tk.W, pady=(4, 0))
+        ttk.Spinbox(frame, from_=1, to=100, textvariable=image_quality, width=5).grid(row=13, column=1, sticky=tk.W, padx=8, pady=(4, 0))
+        ttk.Label(frame, text="Width / height of 0 keeps original dimensions.").grid(row=13, column=2, columnspan=2, sticky=tk.W, pady=(4, 0))
         frame.columnconfigure(1, weight=1)
         frame.columnconfigure(2, weight=1)
 
@@ -401,6 +434,10 @@ class PdfMergerApp(tk.Tk):
                 "Edit metadata": "Create a copy with a title, author, and subject.",
                 "Inspect image metadata": "Show image dimensions, camera/EXIF, GPS, copyright, and other embedded details locally.",
                 "Remove image metadata": "Create an image copy without EXIF, GPS, XMP, and other embedded metadata.",
+                "Convert / resize images": "Convert PNG/JPG/WebP/BMP/TIFF/HEIC images, optionally resize them, and set JPG/WebP quality. Choose an output folder.",
+                "Remove image background": "Create a transparent PNG by automatically separating a centered object from its background. Best for product photos and signatures.",
+                "Screenshot capture": "Capture the full screen or a region. Use Pages as left,top,right,bottom and Title as an optional caption.",
+                "Webcam document scanner": "Use your webcam to scan pages. In the camera window: Space captures, Enter saves the PDF, Esc cancels.",
                 "Add page numbers": "Add a subtle page number footer to every page in a new PDF.",
                 "Add text watermark": "Add centered watermark text to every page in a new PDF.",
                 "Create cover page": "Create a new PDF cover page from the Title and Subject fields.",
@@ -418,6 +455,8 @@ class PdfMergerApp(tk.Tk):
             if Path(output.get()).name.startswith("output."):
                 extension = TOOL_OUTPUT_SPECS.get(operation.get(), (".pdf", "PDF files", "*.pdf"))[0]
                 output.set(str(Path.home() / "Desktop" / f"output{extension}"))
+            if operation.get() == "Convert / resize images":
+                output.set(str(Path.home() / "Desktop" / "converted_images"))
 
         task_box.bind("<<ComboboxSelected>>", update_help)
 
@@ -427,15 +466,16 @@ class PdfMergerApp(tk.Tk):
                 "rotation": rotation.get(), "split": split_count.get(), "password": password.get(), "owner": owner_password.get(),
                 "title": title.get(), "author": author.get(), "subject": subject.get(), "image_preset": image_preset.get(),
                 "image_fit": image_fit.get(), "image_margin": image_margin.get(), "image_dpi": image_dpi.get(),
+                "image_max_width": image_max_width.get(), "image_max_height": image_max_height.get(), "image_quality": image_quality.get(), "image_convert_format": image_convert_format.get(),
             }
-            needs_source = values["operation"] not in {"Inspect image metadata", "Create cover page"}
+            needs_source = values["operation"] not in {"Inspect image metadata", "Create cover page", "Screenshot capture", "Webcam document scanner"}
             needs_output = values["operation"] not in {"Inspect image metadata", "Find duplicate pages"}
             if (needs_source and not values["source"]) or (needs_output and not values["output"]):
                 messagebox.showwarning("PDF toolbox", "Choose an input and, when required, an output file first.")
                 return
             threading.Thread(target=self._tool_worker, args=(values,), daemon=True).start()
 
-        ttk.Button(frame, text="Run tool", command=run_tool, style="Accent.TButton").grid(row=12, column=3, sticky=tk.E, pady=(18, 0))
+        ttk.Button(frame, text="Run tool", command=run_tool, style="Accent.TButton").grid(row=14, column=3, sticky=tk.E, pady=(18, 0))
 
     def _close_toolbox(self, window: tk.Toplevel) -> None:
         if window.winfo_exists():
@@ -443,7 +483,9 @@ class PdfMergerApp(tk.Tk):
         self.toolbox_window = None
 
     def _choose_tool_output(self, variable: tk.StringVar, parent: tk.Misc | None = None, operation: str = "") -> None:
-        if operation == "Remove image metadata":
+        if operation == "Convert / resize images":
+            path = filedialog.askdirectory(parent=parent, title="Choose converted-image output folder")
+        elif operation == "Remove image metadata":
             path = filedialog.asksaveasfilename(parent=parent, title="Save metadata-free image as", defaultextension=".png", filetypes=[("PNG image", "*.png"), ("JPEG image", "*.jpg"), ("WebP image", "*.webp"), ("TIFF image", "*.tiff")])
         elif operation in TOOL_OUTPUT_SPECS:
             extension, label, pattern = TOOL_OUTPUT_SPECS[operation]
@@ -494,6 +536,16 @@ class PdfMergerApp(tk.Tk):
                     float(values["image_margin"]), int(values["image_dpi"]),
                 )
                 message = f"Created {output.name} from {count} image(s)."
+            elif operation == "Convert / resize images":
+                outputs = convert_images(
+                    [Path(path).expanduser().resolve() for path in str(values["source"]).split("|")],
+                    output,
+                    str(values["image_convert_format"]).casefold(),
+                    int(values["image_max_width"]),
+                    int(values["image_max_height"]),
+                    int(values["image_quality"]),
+                )
+                message = f"Converted {len(outputs)} image(s) to {str(values['image_convert_format']).upper()} in {output}."
             elif operation == "Inspect image metadata":
                 paths = [Path(path).expanduser().resolve() for path in str(values["source"]).split("|")]
                 self.events.put(("metadata_report", image_metadata_reports(paths)))
@@ -501,6 +553,16 @@ class PdfMergerApp(tk.Tk):
             elif operation == "Remove image metadata":
                 remove_image_metadata(Path(str(values["source"])).expanduser().resolve(), output)
                 message = f"Created metadata-free image: {output.name}."
+            elif operation == "Remove image background":
+                remove_image_background(Path(str(values["source"])).expanduser().resolve(), output)
+                message = f"Created transparent PNG: {output.name}."
+            elif operation == "Screenshot capture":
+                region = _parse_capture_region(str(values["pages"]))
+                capture_screenshot(output, region, str(values["title"]))
+                message = f"Saved screenshot: {output.name}."
+            elif operation == "Webcam document scanner":
+                pages_scanned = scan_document_from_webcam(output)
+                message = f"Created scanned PDF with {pages_scanned} page(s): {output.name}."
             elif operation == "Create cover page":
                 create_cover_page(output, str(values["title"]), str(values["subject"]))
                 message = f"Created cover page: {output.name}."

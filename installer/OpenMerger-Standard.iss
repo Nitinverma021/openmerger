@@ -1,7 +1,7 @@
 ; Standard installer: PDF and image tools only. It deliberately excludes LibreOffice.
 
 #define AppName "OpenMerger"
-#define AppVersion "1.0.0"
+#define AppVersion "1.1.0"
 #define AppPublisher "OpenMerger"
 #define AppExeName "OpenMerger.exe"
 

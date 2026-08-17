@@ -23,6 +23,8 @@ OpenMerger processes PDFs locally on your computer. It does not upload PDFs, fil
 - Converts PNG, JPG, JPEG, BMP, TIFF, and WebP images into a PDF locally.
 - Inspects EXIF-style image metadata—including dimensions, camera details, date/time, GPS, copyright, and XMP presence—and can make a metadata-free image copy for privacy.
 - Produces polished image PDFs with A4, Letter, poster, social portrait, and wide-banner page presets; choose margins, fit/crop behavior, and 150 or 300 DPI.
+- Converts and resizes PNG, JPG, WebP, BMP, TIFF, HEIC, and HEIF images locally; choose PNG, JPG, WebP, BMP, or TIFF output and set JPG/WebP quality.
+- Removes a centered image subject's background into a transparent PNG, captures annotated full-screen/region screenshots, and scans document pages from a webcam into a PDF.
 - Can pause/cancel long merges and resume chunk jobs by skipping existing parts.
 - Saves `failed_pdfs.txt` if corrupted PDFs are skipped.
 - Saves `duplicate_pdfs.txt` for same-name and same-size duplicate candidates.
@@ -77,8 +79,8 @@ Download either installer from the [GitHub Releases page](https://github.com/Nit
 
 | Download | Size | Best for | Included tools |
 | --- | ---: | --- | --- |
-| `OpenMerger-Setup.exe` — Standard | about 36 MB | Most PDF, image, and spreadsheet jobs | All PDF merge tools, PDF Toolbox, images to PDF, PDF to DOCX, PDF to PPTX, Excel to CSV, CSV to Excel, metadata tools, page numbering, watermarks, cover pages, page-to-PNG export, blank-page removal, and duplicate-page checks. |
-| `OpenMerger-Full-Setup.exe` — Full | about 341 MB | People who also need Word or PowerPoint files converted to PDF without installing anything else | Everything in Standard, plus DOCX to PDF and PPTX to PDF using the bundled offline LibreOffice engine. |
+| `OpenMerger-Setup.exe` — Standard | about 77 MB | Most PDF, image, spreadsheet, webcam, and screenshot jobs | All PDF merge tools, PDF Toolbox, images to PDF, image conversion/resizing, background removal, webcam scanning, screenshots, PDF to DOCX, PDF to PPTX, Excel to CSV, CSV to Excel, metadata tools, page numbering, watermarks, cover pages, page-to-PNG export, blank-page removal, and duplicate-page checks. |
+| `OpenMerger-Full-Setup.exe` — Full | about 381 MB | People who also need Word or PowerPoint files converted to PDF without installing anything else | Everything in Standard, plus DOCX to PDF and PPTX to PDF using the bundled offline LibreOffice engine. |
 
 The Standard edition deliberately hides **DOCX to PDF** and **PPTX to PDF**, because it does not include LibreOffice. The Full edition includes those tools and works without an internet connection or separate LibreOffice installation.
 
@@ -132,6 +134,10 @@ Click **PDF toolbox** in the app header to run common one-file tasks without lea
 - Inspect image metadata or create a metadata-free PNG/JPG/WebP/TIFF copy before sharing.
 - Add page numbers, text watermarks, or a cover page; export pages as PNG; find/remove blank pages; and find duplicate page candidates.
 - Convert PDF to DOCX or PPTX, Excel to CSV, and CSV to Excel locally. The Full installer also enables DOCX/PPTX to PDF without a separate download.
+- Use **Convert / resize images** for batch image format changes, size limits, and JPG/WebP compression. Choose an output folder.
+- Use **Remove image background** for a centered product photo or signature; it creates a transparent PNG. It is an automatic local selection tool, not a cloud/AI service, so results are best when the subject is clearly separated from the background.
+- Use **Screenshot capture** for the full screen, or type `left,top,right,bottom` in the Pages field for a region; Title adds an optional caption.
+- Use **Webcam document scanner** to scan pages locally. In its camera window, press `Space` to capture a page, `Enter` to finish and save the PDF, or `Esc` to cancel.
 
 For image PDFs, **Print A4 + Fit with margins + 300 DPI** is the recommended setting for worksheets, forms, flyers, and printouts. Use **Poster**, **Social portrait**, or **Wide banner** for design-ready marketing exports; choose **Fill and crop** only when you want edge-to-edge artwork.
 
